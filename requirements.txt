@@ -1,0 +1,9 @@
+gradio
+torch
+transformers
+peft
+accelerate
+soundfile
+librosa
+piper-tts
+pathvalidate

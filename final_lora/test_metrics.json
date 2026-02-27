@@ -1,0 +1,8 @@
+{
+  "test_loss": 1.0978580713272095,
+  "test_bleu": 34.079397972562916,
+  "test_runtime": 465.8052,
+  "test_samples_per_second": 1.118,
+  "test_steps_per_second": 0.281,
+  "epoch": 1.6
+}
