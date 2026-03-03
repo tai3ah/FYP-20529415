@@ -28,6 +28,8 @@ TORCH_DTYPE = torch.float32
 
 MAX_AUDIO_SECONDS = 20  # keep short for CPU practicality
 
+OUT_DIR = Path("outputs")
+OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 def normalise_text_for_tts(t: str) -> str:
     t = t.strip()
@@ -104,20 +106,36 @@ def run_pipeline(audio_path: str):
     if len(en_text_tts) == 0:
         return "Translation produced empty text.", None
 
-    with tempfile.TemporaryDirectory() as td:
-        out_wav = Path(td) / "tts.wav"
-        piper_tts(en_text_tts, out_wav)
-        t_tts = time.time()
+    # with tempfile.TemporaryDirectory() as td:
+    #     out_wav = Path(td) / "tts.wav"
+    #     piper_tts(en_text_tts, out_wav)
+    #     t_tts = time.time()
+    #
+    #     info = (
+    #         f"{en_text}\n\n"
+    #         f"Timings (CPU): load {t_load - t0:.2f}s, "
+    #         f"ST {t_st - t_load:.2f}s, "
+    #         f"TTS {t_tts - t_st:.2f}s, "
+    #         f"total {t_tts - t0:.2f}s"
+    #     )
+    #
+    #     return info, str(out_wav)
 
-        info = (
-            f"{en_text}\n\n"
-            f"Timings (CPU): load {t_load - t0:.2f}s, "
-            f"ST {t_st - t_load:.2f}s, "
-            f"TTS {t_tts - t_st:.2f}s, "
-            f"total {t_tts - t0:.2f}s"
-        )
+    import uuid
 
-        return info, str(out_wav)
+    out_wav = OUT_DIR / f"tts_{uuid.uuid4().hex}.wav"
+    piper_tts(en_text_tts, out_wav)
+    t_tts = time.time()
+
+    info = (
+        f"{en_text}\n\n"
+        f"Timings (CPU): load {t_load - t0:.2f}s, "
+        f"ST {t_st - t_load:.2f}s, "
+        f"TTS {t_tts - t_st:.2f}s, "
+        f"total {t_tts - t0:.2f}s"
+    )
+
+    return info, str(out_wav)
 
 
 demo = gr.Interface(
