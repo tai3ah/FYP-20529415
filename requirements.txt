@@ -3,8 +3,10 @@ torch~=2.10.0
 transformers~=5.2.0
 peft~=0.18.1
 accelerate
-soundfile
+soundfile~=0.13.1
 librosa~=0.11.0
 piper-tts
 pathvalidate
 numpy~=2.2.6
+torchaudio~=2.11.0
+speechbrain~=0.5.16
