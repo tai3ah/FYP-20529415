@@ -2,6 +2,7 @@
 # import time
 # import uuid
 # import subprocess
+# import threading
 # from pathlib import Path
 # from typing import Optional, Tuple
 #
@@ -9,10 +10,13 @@
 # import numpy as np
 # import torch
 # import librosa
+# import soundfile as sf
+# import noisereduce as nr
 #
 # from transformers import WhisperProcessor, WhisperForConditionalGeneration
 # from peft import PeftModel
-#
+# from TTS.api import TTS
+# from resemblyzer import VoiceEncoder, preprocess_wav
 #
 # # =========================================================
 # # Config
@@ -25,254 +29,315 @@
 # PIPER_MODEL = PIPER_DIR / f"{PIPER_VOICE}.onnx"
 # PIPER_CFG = PIPER_DIR / f"{PIPER_VOICE}.onnx.json"
 #
-# DEVICE = "cpu"
-# TORCH_DTYPE = torch.float32
-# MAX_AUDIO_SECONDS = 20
+# XTTS_MODEL_NAME = "tts_models/multilingual/multi-dataset/xtts_v2"
+# XTTS_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# TORCH_DTYPE = torch.float16 if torch.cuda.is_available() else torch.float32
+#
+# XTTS_TEMPERATURE = 0.60
+# XTTS_REPETITION_PENALTY = 5.0
+# XTTS_TOP_K = 50
+# XTTS_TOP_P = 0.85
+# XTTS_SPEED = 1.0
+# MAX_CHUNK_CHARS = 180
+#
+# WHISPER_MAX_SECONDS = 60
+# XTTS_REF_MAX_SECONDS = 30
+# WHISPER_SR = 16000
+# XTTS_SR = 22050
+# XTTS_OUTPUT_SR = 24000
 #
 # OUT_DIR = Path("outputs")
 # OUT_DIR.mkdir(parents=True, exist_ok=True)
+# TEMP_DIR = Path("outputs/temp")
+# TEMP_DIR.mkdir(parents=True, exist_ok=True)
+#
+# FFMPEG_BIN = "ffmpeg"
+#
+# # Google Sheets config
+# SHEET_ID = "1C2ZFxtJ2H4TwnakoV_buVzlNIOkZ2GnBO3o9sIXHR2I"
+# GOOGLE_FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLScrM4CSuzdfhGflaliiDkBLl4vasHCqA3MQcVI_nS5ZglkeCw/viewform"
+# SHEETS_API_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:json"
 #
 # torch.set_num_threads(max(1, min(4, torch.get_num_threads())))
 #
-# # Lazy-loaded globals
 # ST_PROC = None
 # ST_MODEL = None
-# MODEL_READY = False
+# XTTS_MODEL = None
+# TRANSLATION_READY = False
+# XTTS_READY = False
+#
+# # Audio sample placeholders
+# AUDIO_SAMPLES = [
+#     {"name": "Sample 1 — Child's voice", "file": "audio_samples/sample_1.wav"},
+#     {"name": "Sample 2 — Adult female voice", "file": "audio_samples/sample_2.wav"},
+#     {"name": "Sample 3 — Adult male voice", "file": "audio_samples/sample_3.wav"},
+#     {"name": "Sample 4 — Young female voice", "file": "audio_samples/sample_4.wav"},
+#     {"name": "Sample 5 — Elderly voice", "file": "audio_samples/sample_5.wav"},
+# ]
 #
 #
 # # =========================================================
-# # Backend utility
+# # Audio utilities
+# # =========================================================
+# def ffmpeg_convert_to_wav(input_path: str, output_path: str, sr: int) -> None:
+#     cmd = [
+#         FFMPEG_BIN, "-y", "-i", input_path,
+#         "-ac", "1", "-ar", str(sr), "-sample_fmt", "s16",
+#         output_path
+#     ]
+#     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+#
+#
+# def load_audio_for_whisper(audio_path: str) -> Tuple[np.ndarray, int]:
+#     converted = str(TEMP_DIR / f"whisper_{uuid.uuid4().hex}.wav")
+#     ffmpeg_convert_to_wav(audio_path, converted, sr=WHISPER_SR)
+#     audio, _ = librosa.load(converted, sr=WHISPER_SR, mono=True)
+#     max_samples = WHISPER_MAX_SECONDS * WHISPER_SR
+#     if len(audio) > max_samples:
+#         audio = audio[:max_samples]
+#     return audio, WHISPER_SR
+#
+#
+# def prepare_xtts_reference(audio_path: str) -> str:
+#     converted = str(TEMP_DIR / f"xtts_ref_raw_{uuid.uuid4().hex}.wav")
+#     ffmpeg_convert_to_wav(audio_path, converted, sr=XTTS_SR)
+#     audio, _ = librosa.load(converted, sr=XTTS_SR, mono=True)
+#     max_samples = XTTS_REF_MAX_SECONDS * XTTS_SR
+#     if len(audio) > max_samples:
+#         audio = audio[:max_samples]
+#     if len(audio) > XTTS_SR:
+#         noise_clip = audio[:int(0.5 * XTTS_SR)]
+#     else:
+#         noise_clip = audio[:max(1, len(audio) // 4)]
+#     try:
+#         audio = nr.reduce_noise(y=audio, sr=XTTS_SR, y_noise=noise_clip, prop_decrease=0.75, stationary=False)
+#     except Exception:
+#         pass
+#     out_path = str(TEMP_DIR / f"xtts_ref_clean_{uuid.uuid4().hex}.wav")
+#     sf.write(out_path, audio, XTTS_SR)
+#     return out_path
+#
+#
+# # =========================================================
+# # Text utilities
 # # =========================================================
 # def normalise_text_for_tts(text: str) -> str:
-#     text = text.strip()
-#     text = re.sub(r"\s+", " ", text)
-#     return text
+#     return re.sub(r"\s+", " ", text.strip())
 #
 #
-# def startup_validation() -> Optional[str]:
+# def split_text_for_xtts(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list:
+#     text = str(text).strip()
+#     if len(text) <= max_chars:
+#         return [text]
+#     sentences = re.split(r'(?<=[.!?])\s+', text)
+#     sentences = [s.strip() for s in sentences if s.strip()]
+#     chunks, current = [], ""
+#     for sentence in sentences:
+#         if not current:
+#             current = sentence
+#         elif len(current) + 1 + len(sentence) <= max_chars:
+#             current += " " + sentence
+#         else:
+#             chunks.append(current.strip())
+#             current = sentence
+#     if current:
+#         chunks.append(current.strip())
+#     final_chunks = []
+#     for chunk in chunks:
+#         if len(chunk) <= max_chars:
+#             final_chunks.append(chunk)
+#         else:
+#             words, temp = chunk.split(), ""
+#             for word in words:
+#                 if not temp:
+#                     temp = word
+#                 elif len(temp) + 1 + len(word) <= max_chars:
+#                     temp += " " + word
+#                 else:
+#                     final_chunks.append(temp.strip())
+#                     temp = word
+#             if temp:
+#                 final_chunks.append(temp.strip())
+#     return final_chunks
+#
+#
+# # =========================================================
+# # Model loading
+# # =========================================================
+# def validate_piper_assets() -> Optional[str]:
 #     if not (PIPER_MODEL.exists() and PIPER_CFG.exists()):
-#         return (
-#             "Piper voice files are missing.\n"
-#             f"Expected:\n- {PIPER_MODEL}\n- {PIPER_CFG}\n"
-#             f"Run:\npython -m piper.download_voices {PIPER_VOICE} --download-dir {PIPER_DIR}"
-#         )
-#
-#     if not LORA_DIR.exists():
-#         return f"LoRA folder not found at: {LORA_DIR}"
-#
+#         return f"Piper voice files missing at {PIPER_DIR}"
 #     return None
 #
 #
-# def load_audio_mono_16k(path: str, max_seconds: int) -> Tuple[np.ndarray, int]:
-#     y, sr = librosa.load(path, sr=16000, mono=True)
-#     if len(y) > max_seconds * 16000:
-#         y = y[: max_seconds * 16000]
-#     return y, 16000
-#
-#
-# def piper_tts(text: str, out_wav: Path):
-#     cmd = [
-#         "piper",
-#         "--model", str(PIPER_MODEL),
-#         "--config", str(PIPER_CFG),
-#         "--output_file", str(out_wav),
-#     ]
-#     subprocess.run(cmd, input=text.encode("utf-8"), check=True)
-#
-#
 # def load_translation_pipeline() -> str:
-#     global ST_PROC, ST_MODEL, MODEL_READY
-#
-#     if MODEL_READY and ST_PROC is not None and ST_MODEL is not None:
-#         return "Model already loaded."
-#
-#     validation_error = startup_validation()
-#     if validation_error:
-#         raise RuntimeError(validation_error)
-#
+#     global ST_PROC, ST_MODEL, TRANSLATION_READY
+#     if TRANSLATION_READY:
+#         return "Translation model already loaded."
+#     if not LORA_DIR.exists():
+#         raise RuntimeError(f"LoRA folder not found at: {LORA_DIR}")
 #     t0 = time.time()
-#
 #     ST_PROC = WhisperProcessor.from_pretrained(BASE_MODEL_ID)
-#     base_model = WhisperForConditionalGeneration.from_pretrained(
-#         BASE_MODEL_ID,
-#         low_cpu_mem_usage=True
-#     ).to(DEVICE)
+#     base_model = WhisperForConditionalGeneration.from_pretrained(BASE_MODEL_ID, low_cpu_mem_usage=True).to(DEVICE)
 #     base_model.eval()
-#
 #     ST_MODEL = PeftModel.from_pretrained(base_model, str(LORA_DIR)).to(DEVICE)
 #     ST_MODEL.eval()
+#     TRANSLATION_READY = True
+#     return f"Translation model loaded in {time.time() - t0:.2f}s."
 #
-#     MODEL_READY = True
-#     return f"Translation pipeline loaded in {time.time() - t0:.2f}s."
+#
+# def load_xtts_model() -> str:
+#     global XTTS_MODEL, XTTS_READY
+#     if XTTS_READY:
+#         return "XTTS model already loaded."
+#     t0 = time.time()
+#     XTTS_MODEL = TTS(XTTS_MODEL_NAME).to(XTTS_DEVICE)
+#     XTTS_READY = True
+#     return f"XTTS loaded in {time.time() - t0:.2f}s."
 #
 #
+# def initialise_models() -> str:
+#     messages = []
+#     try:
+#         messages.append(load_translation_pipeline())
+#     except Exception as e:
+#         messages.append(f"Translation init failed: {e}")
+#     try:
+#         err = validate_piper_assets()
+#         messages.append("Piper TTS assets found." if not err else f"Piper: {err}")
+#     except Exception as e:
+#         messages.append(f"Piper check failed: {e}")
+#     try:
+#         messages.append(load_xtts_model())
+#     except Exception as e:
+#         messages.append(f"XTTS init failed: {e}")
+#     return "\n".join(messages)
+#
+#
+# def background_init():
+#     print("Background model initialisation started...")
+#     msg = initialise_models()
+#     print(f"Models ready:\n{msg}")
+#
+#
+# # =========================================================
+# # Inference
+# # =========================================================
 # @torch.inference_mode()
 # def translate_fr_to_en(audio_16k: np.ndarray, sr: int) -> str:
 #     inputs = ST_PROC(audio_16k, sampling_rate=sr, return_tensors="pt")
 #     input_features = inputs["input_features"].to(DEVICE, dtype=TORCH_DTYPE)
-#
-#     gen_ids = ST_MODEL.generate(
-#         input_features=input_features,
-#         task="translate",
-#         language="en",
-#         num_beams=1,
-#         max_new_tokens=192,
-#     )
-#
-#     text = ST_PROC.batch_decode(gen_ids, skip_special_tokens=True)[0]
-#     return text.strip()
+#     gen_ids = ST_MODEL.generate(input_features=input_features, task="translate", language="en", num_beams=1, max_new_tokens=192)
+#     return ST_PROC.batch_decode(gen_ids, skip_special_tokens=True)[0].strip()
 #
 #
-# def initialise_models():
-#     try:
-#         msg = load_translation_pipeline()
-#         return f"Ready. {msg}"
-#     except Exception as e:
-#         return f"Initialisation failed: {str(e)}"
+# def piper_tts(text: str, out_wav: Path) -> None:
+#     subprocess.run(["piper", "--model", str(PIPER_MODEL), "--config", str(PIPER_CFG), "--output_file", str(out_wav)],
+#                    input=text.encode("utf-8"), check=True)
 #
 #
+# def xtts_synthesise(text: str, ref_wav_path: str, out_wav: Path) -> int:
+#     chunks = split_text_for_xtts(text)
+#     audio_parts = []
+#     for chunk in chunks:
+#         wav = XTTS_MODEL.tts(text=chunk, speaker_wav=ref_wav_path, language="en",
+#                               temperature=XTTS_TEMPERATURE, repetition_penalty=XTTS_REPETITION_PENALTY,
+#                               top_k=XTTS_TOP_K, top_p=XTTS_TOP_P, speed=XTTS_SPEED)
+#         audio_parts.append(np.asarray(wav, dtype=np.float32))
+#     if not audio_parts:
+#         raise ValueError("XTTS produced no audio output.")
+#     sf.write(str(out_wav), np.concatenate(audio_parts), XTTS_OUTPUT_SR)
+#     return len(chunks)
+#
+#
+# # =========================================================
+# # Pipeline runners
+# # =========================================================
 # def run_standard_pipeline(audio_path: str, progress=gr.Progress()):
 #     if audio_path is None or not Path(audio_path).exists():
-#         return (
-#             "No audio provided.",
-#             None,
-#             "No timing information available.",
-#             "Please upload or record a French speech file to continue."
-#         )
-#
-#     if not MODEL_READY:
-#         progress(0.1, desc="Loading translation model")
+#         return ("No audio provided.", None, "", "Please upload or record a French speech file.")
+#     if not TRANSLATION_READY:
+#         progress(0.08, desc="Loading translation model")
 #         load_translation_pipeline()
-#
+#     err = validate_piper_assets()
+#     if err:
+#         return ("Piper TTS unavailable.", None, "", err)
 #     t0 = time.time()
-#
-#     progress(0.25, desc="Loading and preparing audio")
-#     audio_16k, sr = load_audio_mono_16k(audio_path, MAX_AUDIO_SECONDS)
+#     progress(0.22, desc="Preparing audio")
+#     audio_16k, sr = load_audio_for_whisper(audio_path)
 #     t_load = time.time()
-#
-#     progress(0.55, desc="Translating French speech to English")
+#     progress(0.50, desc="Translating French to English")
 #     en_text = translate_fr_to_en(audio_16k, sr)
-#     t_st = time.time()
-#
-#     en_text_tts = normalise_text_for_tts(en_text)
-#     if not en_text_tts:
-#         return (
-#             "Translation produced empty text.",
-#             None,
-#             "Audio was processed, but no valid translated text was produced.",
-#             "Try a clearer or shorter audio sample."
-#         )
-#
-#     progress(0.85, desc="Generating English speech output")
-#     out_wav = OUT_DIR / f"tts_{uuid.uuid4().hex}.wav"
-#     piper_tts(en_text_tts, out_wav)
+#     t_trans = time.time()
+#     en_text_clean = normalise_text_for_tts(en_text)
+#     if not en_text_clean:
+#         return ("Translation produced empty text.", None, "", "Try a clearer audio sample.")
+#     progress(0.84, desc="Generating English speech")
+#     out_wav = OUT_DIR / f"standard_{uuid.uuid4().hex}.wav"
+#     piper_tts(en_text_clean, out_wav)
 #     t_tts = time.time()
-#
-#     progress(1.0, desc="Completed")
-#
-#     timing_info = (
-#         f"Audio loading: {t_load - t0:.2f}s\n"
-#         f"Speech translation: {t_st - t_load:.2f}s\n"
-#         f"Speech synthesis: {t_tts - t_st:.2f}s\n"
-#         f"Total runtime: {t_tts - t0:.2f}s"
-#     )
-#
-#     status = (
-#         "Completed successfully. Standard French-to-English speech translation "
-#         "and English speech generation finished."
-#     )
-#
-#     return en_text, str(out_wav), timing_info, status
+#     progress(1.0, desc="Done")
+#     timing = (f"Audio preparation: {t_load - t0:.2f}s\nSpeech translation: {t_trans - t_load:.2f}s\n"
+#               f"Speech synthesis: {t_tts - t_trans:.2f}s\nTotal: {t_tts - t0:.2f}s")
+#     return (en_text, str(out_wav), timing, "Completed. Standard French-to-English translation done.")
 #
 #
-# def run_voice_clone_placeholder(audio_path: str):
+# def run_voice_clone_pipeline(audio_path: str, progress=gr.Progress()):
 #     if audio_path is None or not Path(audio_path).exists():
-#         return (
-#             "No audio provided.",
-#             None,
-#             "No timing information available.",
-#             "Please upload or record a French speech file to continue."
-#         )
-#
-#     return (
-#         "Voice cloning mode is currently under development.",
-#         None,
-#         "Pipeline timing is not available for this mode yet.",
-#         (
-#             "This interface pathway has been prepared for future integration of "
-#             "speaker-preserving output generation."
-#         )
-#     )
+#         return ("No audio provided.", None, "", "Please upload or record a French speech file.")
+#     if not TRANSLATION_READY:
+#         progress(0.06, desc="Loading translation model")
+#         load_translation_pipeline()
+#     if not XTTS_READY:
+#         progress(0.12, desc="Loading XTTS model")
+#         load_xtts_model()
+#     t0 = time.time()
+#     progress(0.20, desc="Preparing audio")
+#     audio_16k, sr = load_audio_for_whisper(audio_path)
+#     t_load = time.time()
+#     progress(0.42, desc="Translating French to English")
+#     en_text = translate_fr_to_en(audio_16k, sr)
+#     t_trans = time.time()
+#     en_text_clean = normalise_text_for_tts(en_text)
+#     if not en_text_clean:
+#         return ("Translation produced empty text.", None, "", "Try a clearer audio sample.")
+#     progress(0.60, desc="Preparing reference audio")
+#     ref_wav_path = prepare_xtts_reference(audio_path)
+#     t_ref = time.time()
+#     progress(0.78, desc="Cloning voice and generating English speech")
+#     out_wav = OUT_DIR / f"cloned_{uuid.uuid4().hex}.wav"
+#     num_chunks = xtts_synthesise(en_text_clean, ref_wav_path, out_wav)
+#     t_tts = time.time()
+#     progress(1.0, desc="Done")
+#     timing = (f"Audio preparation: {t_load - t0:.2f}s\nSpeech translation: {t_trans - t_load:.2f}s\n"
+#               f"Reference audio prep: {t_ref - t_trans:.2f}s\nVoice cloning ({num_chunks} chunk(s)): {t_tts - t_ref:.2f}s\n"
+#               f"Total: {t_tts - t0:.2f}s")
+#     return (en_text, str(out_wav), timing, "Completed. French speech translated and synthesised with voice cloning.")
 #
 #
 # def run_app(mode: str, audio_path: str, progress=gr.Progress()):
 #     if mode == "Translate without voice cloning":
 #         return run_standard_pipeline(audio_path, progress=progress)
-#
 #     if mode == "Translate with voice cloning":
-#         progress(0.2, desc="Opening voice cloning mode")
-#         return run_voice_clone_placeholder(audio_path)
-#
-#     return (
-#         "Invalid mode selected.",
-#         None,
-#         "No timing information available.",
-#         "Please choose a valid translation mode."
-#     )
-#
-#
-# # =========================================================
-# # Content text you can edit easily
-# # =========================================================
-# HERO_TITLE = "Affordable translation."
-# HERO_SUBTITLE = "Drop the communication barrier."
-#
-# ABOUT_TEXT = (
-#     "SpeechBridge is a modular speech-to-speech translation system focused on "
-#     "French-to-English spoken translation. It combines a fine-tuned Whisper-based "
-#     "translation model with English speech synthesis in a clean, demonstration-ready interface."
-# )
-#
-# PIPELINE_CARD_1 = (
-#     "Record or upload French speech audio using the interface below. "
-#     "Short clear clips are processed for end-to-end translation."
-# )
-#
-# PIPELINE_CARD_2 = (
-#     "Choose between standard translation or a voice cloning pathway. "
-#     "The current implemented system performs translation without voice cloning."
-# )
-#
-# PIPELINE_CARD_3 = (
-#     "Receive translated English text and generated English speech output, together with "
-#     "runtime information for transparent system evaluation."
-# )
-#
-# FUTURE_WORK_TEXT = (
-#     "Current scope is limited to French-to-English speech translation. Future development may "
-#     "include integrated voice cloning, broader multilingual support, faster inference, and "
-#     "real-time streaming deployment."
-# )
-#
-# FEEDBACK_1 = "Trial feedback from students or evaluators can be inserted here."
-# FEEDBACK_2 = "Use this section to present usability impressions from your university testing."
-# FEEDBACK_3 = "You can also summarise comments about translation quality, latency, and clarity here."
+#         return run_voice_clone_pipeline(audio_path, progress=progress)
+#     return ("Invalid mode.", None, "", "Please select a valid mode.")
 #
 #
 # # =========================================================
 # # CSS
 # # =========================================================
 # CUSTOM_CSS = """
-# @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Cormorant+Garamond:wght@400;500;600;700&display=swap');
+# @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap');
 #
-# html {
-#     scroll-behavior: smooth;
-# }
+# *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+#
+# html { scroll-behavior: smooth; }
 #
 # body, .gradio-container {
-#     background: #f3f3f1 !important;
-#     font-family: 'Inter', sans-serif !important;
-#     color: #111111 !important;
+#     background: #f0ede6 !important;
+#     font-family: 'DM Sans', sans-serif !important;
+#     color: #1a1a18 !important;
 # }
 #
 # .gradio-container {
@@ -281,502 +346,755 @@
 #     margin: 0 !important;
 # }
 #
-# #main-wrap {
-#     max-width: 1500px;
-#     margin: 0 auto;
+# /* ── NAV ── */
+# #sb-nav {
+#     position: sticky; top: 0; z-index: 100;
+#     background: #1a1a18;
+#     padding: 0 48px;
+#     display: flex; align-items: center; justify-content: space-between;
+#     height: 64px;
 # }
 #
-# #top-nav {
-#     position: sticky;
-#     top: 0;
-#     z-index: 1000;
-#     background: #dedcc4;
-#     border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+# .sb-logo {
+#     font-family: 'DM Serif Display', serif;
+#     font-size: 1.45rem;
+#     color: #f0ede6;
+#     letter-spacing: -0.01em;
 # }
 #
-# .nav-inner {
-#     max-width: 1400px;
-#     margin: 0 auto;
-#     padding: 18px 22px;
-#     display: flex;
-#     align-items: center;
-#     justify-content: space-between;
-#     gap: 20px;
+# .sb-logo span { color: #c8b89a; }
+#
+# .sb-nav-links { display: flex; gap: 36px; align-items: center; }
+# .sb-nav-links a {
+#     color: #a8a49c; text-decoration: none;
+#     font-size: 0.875rem; font-weight: 400;
+#     letter-spacing: 0.02em; transition: color 0.2s;
+# }
+# .sb-nav-links a:hover { color: #f0ede6; }
+#
+# .sb-nav-cta {
+#     background: #c8b89a !important; color: #1a1a18 !important;
+#     padding: 9px 22px; font-size: 0.875rem; font-weight: 600;
+#     text-decoration: none; letter-spacing: 0.01em;
+#     transition: background 0.2s;
+# }
+# .sb-nav-cta:hover { background: #b8a88a !important; }
+#
+# /* ── HERO ── */
+# #sb-hero {
+#     background: #1a1a18;
+#     padding: 100px 48px 90px;
+#     position: relative; overflow: hidden;
 # }
 #
-# .brand-wrap {
-#     display: flex;
-#     align-items: center;
-#     gap: 12px;
+# .sb-hero-eyebrow {
+#     font-size: 0.75rem; font-weight: 500; letter-spacing: 0.14em;
+#     text-transform: uppercase; color: #c8b89a;
+#     margin-bottom: 24px;
 # }
 #
-# .brand-logo {
-#     width: 34px;
-#     height: 34px;
-#     border-radius: 50%;
-#     background:
-#         radial-gradient(circle at center, #111 12%, transparent 13%),
-#         repeating-radial-gradient(circle at center, #111 0 1.6px, transparent 1.6px 4px);
-#     opacity: 0.95;
+# .sb-hero-title {
+#     font-family: 'DM Serif Display', serif;
+#     font-size: clamp(3.2rem, 6vw, 5.5rem);
+#     line-height: 1.05; color: #f0ede6;
+#     max-width: 820px; margin-bottom: 24px;
 # }
 #
-# .brand-text {
-#     display: flex;
-#     flex-direction: column;
-#     line-height: 1;
-# }
+# .sb-hero-title em { color: #c8b89a; font-style: italic; }
 #
-# .brand-title {
-#     font-family: 'Inter', sans-serif;
-#     font-size: 1.9rem;
-#     font-weight: 700;
-#     letter-spacing: -0.03em;
-#     color: #111;
-# }
-#
-# .brand-sub {
-#     font-size: 0.54rem;
-#     letter-spacing: 0.22em;
-#     text-transform: uppercase;
-#     color: #555;
-#     margin-top: 4px;
-# }
-#
-# .nav-links {
-#     display: flex;
-#     align-items: center;
-#     gap: 34px;
-#     flex-wrap: wrap;
-#     justify-content: center;
-# }
-#
-# .nav-links a {
-#     color: #111;
-#     text-decoration: none;
-#     font-size: 1rem;
-#     font-weight: 500;
-# }
-#
-# .nav-links a:hover {
-#     opacity: 0.7;
-# }
-#
-# .nav-btn {
-#     background: #000;
-#     color: #fff !important;
-#     padding: 14px 28px;
-#     text-decoration: none;
-#     font-weight: 600;
-#     display: inline-block;
-#     min-width: 130px;
-#     text-align: center;
-# }
-#
-# .hero-section {
-#     background: #f3f3f1;
-#     padding: 88px 40px 70px 40px;
-#     text-align: center;
-# }
-#
-# .hero-title {
-#     font-family: 'Cormorant Garamond', serif;
-#     font-size: clamp(4rem, 7vw, 6.4rem);
-#     line-height: 0.95;
-#     font-weight: 500;
-#     margin-bottom: 22px;
-#     color: #111;
-# }
-#
-# .hero-subtitle {
-#     font-size: 1.7rem;
+# .sb-hero-desc {
+#     font-size: 1.05rem; line-height: 1.85;
+#     color: #a8a49c; max-width: 580px; margin-bottom: 40px;
 #     font-weight: 300;
-#     margin-bottom: 18px;
-#     color: #333;
 # }
 #
-# .hero-desc {
-#     max-width: 850px;
-#     margin: 0 auto 26px auto;
-#     font-size: 1.02rem;
-#     line-height: 1.8;
-#     color: #4b4b4b;
+# .sb-hero-actions { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+#
+# .sb-btn-primary {
+#     background: #c8b89a; color: #1a1a18;
+#     padding: 14px 32px; font-size: 0.95rem; font-weight: 600;
+#     text-decoration: none; display: inline-block;
+#     transition: background 0.2s, transform 0.15s;
+# }
+# .sb-btn-primary:hover { background: #b8a88a; transform: translateY(-1px); }
+#
+# .sb-btn-ghost {
+#     background: transparent; color: #f0ede6;
+#     padding: 14px 32px; font-size: 0.95rem; font-weight: 400;
+#     text-decoration: none; display: inline-block;
+#     border: 1px solid rgba(240,237,230,0.2);
+#     transition: border-color 0.2s;
+# }
+# .sb-btn-ghost:hover { border-color: rgba(240,237,230,0.5); }
+#
+# .sb-stats-strip {
+#     display: flex; gap: 48px; margin-top: 72px;
+#     padding-top: 40px; border-top: 1px solid rgba(240,237,230,0.08);
+#     flex-wrap: wrap;
+# }
+# .sb-stat-item {}
+# .sb-stat-num {
+#     font-family: 'DM Serif Display', serif;
+#     font-size: 2rem; color: #f0ede6; line-height: 1;
+#     margin-bottom: 6px;
+# }
+# .sb-stat-label {
+#     font-size: 0.8rem; color: #6a665e;
+#     letter-spacing: 0.06em; text-transform: uppercase;
 # }
 #
-# .hero-cta {
-#     display: inline-block;
-#     background: #000;
-#     color: #fff !important;
-#     text-decoration: none;
-#     padding: 15px 34px;
-#     font-weight: 600;
-#     margin-top: 6px;
+# /* ── WAVEFORM ── */
+# .sb-waveform {
+#     position: absolute; bottom: 0; right: 0;
+#     width: 420px; height: 180px; opacity: 0.12;
+#     overflow: hidden;
 # }
 #
-# .section-wrap {
-#     padding: 82px 70px;
+# /* ── HOW IT WORKS ── */
+# #sb-how {
+#     background: #f0ede6;
+#     padding: 96px 48px;
 # }
 #
-# .section-light {
-#     background: #f3f3f1;
+# .sb-section-label {
+#     font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em;
+#     text-transform: uppercase; color: #c8b89a;
+#     margin-bottom: 16px;
 # }
 #
-# .section-dark {
-#     background: #000;
-#     color: #fff;
+# .sb-section-title {
+#     font-family: 'DM Serif Display', serif;
+#     font-size: clamp(2rem, 4vw, 3.2rem);
+#     line-height: 1.1; color: #1a1a18;
+#     margin-bottom: 56px; max-width: 600px;
 # }
 #
-# .section-title {
-#     font-family: 'Cormorant Garamond', serif;
-#     font-size: clamp(3rem, 5vw, 5rem);
-#     line-height: 1.02;
-#     text-align: center;
-#     margin-bottom: 28px;
-#     font-weight: 500;
-# }
-#
-# .section-subtext {
-#     max-width: 940px;
-#     margin: 0 auto 48px auto;
-#     text-align: center;
-#     line-height: 1.8;
-#     font-size: 1rem;
-#     color: #4f4f4f;
-# }
-#
-# .section-dark .section-subtext {
-#     color: #e9e9e9;
-# }
-#
-# .card-grid {
+# .sb-steps {
 #     display: grid;
-#     grid-template-columns: repeat(3, minmax(0, 1fr));
-#     gap: 26px;
-#     margin-top: 20px;
+#     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+#     gap: 0;
+#     position: relative;
 # }
 #
-# .info-card {
-#     background: transparent;
-#     padding: 10px 4px;
+# .sb-step {
+#     padding: 32px 36px 32px 0;
+#     border-top: 2px solid #1a1a18;
+#     position: relative;
 # }
 #
-# .info-card h3 {
-#     font-family: 'Cormorant Garamond', serif;
-#     font-size: 2rem;
-#     margin-bottom: 14px;
-#     font-weight: 600;
+# .sb-step-num {
+#     font-family: 'DM Serif Display', serif;
+#     font-size: 0.85rem; color: #c8b89a;
+#     margin-bottom: 16px; letter-spacing: 0.08em;
 # }
 #
-# .info-card p {
-#     font-size: 1rem;
-#     line-height: 1.95;
-#     color: #333;
+# .sb-step-title {
+#     font-size: 1.1rem; font-weight: 600; color: #1a1a18;
+#     margin-bottom: 12px; line-height: 1.3;
 # }
 #
-# .center-btn-wrap {
-#     text-align: center;
-#     margin-top: 34px;
+# .sb-step-desc {
+#     font-size: 0.9rem; line-height: 1.75; color: #5a5750;
+#     font-weight: 300;
 # }
 #
-# .center-btn {
-#     display: inline-block;
-#     background: #000;
-#     color: #fff !important;
-#     text-decoration: none;
-#     padding: 16px 34px;
-#     font-weight: 600;
-#     min-width: 180px;
-#     text-align: center;
+# /* ── DEMO VIDEO ── */
+# #sb-demo-video {
+#     background: #1a1a18;
+#     padding: 80px 48px;
 # }
 #
-# .demo-shell {
-#     max-width: 1320px;
-#     margin: 36px auto 0 auto;
-#     border: 1px solid rgba(0,0,0,0.08);
-#     background: rgba(255,255,255,0.56);
-#     backdrop-filter: blur(4px);
-#     box-shadow: 0 10px 35px rgba(0,0,0,0.05);
+# .sb-video-wrap {
+#     max-width: 900px; margin: 0 auto;
 # }
 #
-# .demo-top-bar {
-#     background: #dedcc4;
-#     padding: 14px 18px;
-#     font-size: 0.95rem;
-#     font-weight: 600;
-#     border-bottom: 1px solid rgba(0,0,0,0.06);
-# }
-#
-# .demo-note {
-#     max-width: 900px;
-#     margin: 0 auto 18px auto;
-#     text-align: center;
-#     font-size: 1rem;
-#     line-height: 1.8;
-#     color: #444;
-# }
-#
-# .feedback-grid {
-#     display: grid;
-#     grid-template-columns: repeat(3, minmax(0, 1fr));
-#     gap: 30px;
+# .sb-video-container {
+#     position: relative; padding-bottom: 56.25%;
+#     background: #2a2a28; overflow: hidden;
 #     margin-top: 40px;
 # }
 #
-# .feedback-card {
-#     text-align: center;
-#     padding: 10px 14px;
+# .sb-video-container video {
+#     position: absolute; top: 0; left: 0;
+#     width: 100%; height: 100%; object-fit: cover;
 # }
 #
-# .feedback-avatar {
-#     width: 88px;
-#     height: 88px;
-#     border-radius: 50%;
-#     background: linear-gradient(135deg, #b9bccf, #8287a7);
-#     margin: 0 auto 18px auto;
+# .sb-video-placeholder {
+#     position: absolute; top: 0; left: 0;
+#     width: 100%; height: 100%;
+#     display: flex; flex-direction: column;
+#     align-items: center; justify-content: center;
+#     gap: 16px;
 # }
 #
-# .quote-mark {
-#     font-size: 4rem;
-#     line-height: 1;
-#     color: #7280e4;
-#     margin-bottom: 10px;
-#     font-family: 'Cormorant Garamond', serif;
+# .sb-play-icon {
+#     width: 64px; height: 64px; border-radius: 50%;
+#     background: rgba(200,184,154,0.15);
+#     border: 1px solid rgba(200,184,154,0.3);
+#     display: flex; align-items: center; justify-content: center;
 # }
 #
-# .feedback-text {
-#     font-size: 1rem;
-#     line-height: 1.8;
-#     color: #444;
-#     font-style: italic;
-#     min-height: 118px;
+# .sb-video-placeholder p {
+#     color: #6a665e; font-size: 0.9rem; letter-spacing: 0.04em;
 # }
 #
-# .feedback-name {
-#     margin-top: 16px;
-#     font-weight: 700;
-#     font-size: 1.08rem;
+# /* ── AUDIO SAMPLES ── */
+# #sb-samples {
+#     background: #f0ede6;
+#     padding: 80px 48px;
 # }
 #
-# .footer {
-#     background: #dedcc4;
-#     padding: 44px 60px;
-# }
-#
-# .footer-grid {
+# .sb-samples-grid {
 #     display: grid;
-#     grid-template-columns: 1.2fr 0.7fr 1fr 0.9fr;
-#     gap: 34px;
-#     align-items: start;
+#     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+#     gap: 16px; margin-top: 40px;
 # }
 #
-# .footer-title {
-#     font-weight: 700;
+# .sb-sample-card {
+#     background: #fff; border: 1px solid #e0ddd6;
+#     padding: 20px 24px;
+#     display: flex; flex-direction: column; gap: 12px;
+# }
+#
+# .sb-sample-label {
+#     font-size: 0.8rem; font-weight: 600; letter-spacing: 0.08em;
+#     text-transform: uppercase; color: #c8b89a;
+# }
+#
+# .sb-sample-name {
+#     font-size: 1rem; font-weight: 500; color: #1a1a18;
+# }
+#
+# .sb-sample-actions {
+#     display: flex; gap: 10px; margin-top: 4px;
+# }
+#
+# .sb-sample-btn {
+#     font-size: 0.8rem; font-weight: 500; padding: 7px 16px;
+#     cursor: pointer; border: none; transition: all 0.15s;
+#     text-decoration: none; display: inline-block;
+# }
+#
+# .sb-sample-play {
+#     background: #1a1a18; color: #f0ede6;
+# }
+# .sb-sample-play:hover { background: #2a2a28; }
+#
+# .sb-sample-dl {
+#     background: transparent; color: #1a1a18;
+#     border: 1px solid #c8b89a;
+# }
+# .sb-sample-dl:hover { background: #c8b89a; }
+#
+# /* ── SYSTEM DEMO ── */
+# #sb-system {
+#     background: #f0ede6;
+#     padding: 0 48px 96px;
+# }
+#
+# .sb-system-shell {
+#     border: 1px solid #d8d5ce;
+#     background: #fff; overflow: hidden;
+# }
+#
+# .sb-system-topbar {
+#     background: #1a1a18;
+#     padding: 14px 24px;
+#     display: flex; align-items: center; gap: 10px;
+# }
+#
+# .sb-topbar-dot {
+#     width: 10px; height: 10px; border-radius: 50%;
+# }
+#
+# .sb-topbar-title {
+#     font-size: 0.8rem; color: #6a665e;
+#     margin-left: 8px; letter-spacing: 0.04em;
+# }
+#
+# .sb-system-inner { padding: 32px; }
+#
+# /* Override ALL Gradio component colors inside system area */
+# #sb-system .gradio-container,
+# #sb-system .block,
+# #sb-system .gr-box,
+# #sb-system .wrap,
+# #sb-system label,
+# #sb-system .label-wrap span,
+# #sb-system .svelte-1ed2p3z {
+#     background: transparent !important;
+#     color: #1a1a18 !important;
+#     border-color: #d8d5ce !important;
+# }
+#
+# #sb-system textarea,
+# #sb-system input[type="text"],
+# #sb-system .gr-textbox textarea {
+#     background: #faf9f6 !important;
+#     border: 1px solid #d8d5ce !important;
+#     border-radius: 0 !important;
+#     color: #1a1a18 !important;
+#     font-family: 'DM Sans', sans-serif !important;
+# }
+#
+# #sb-system .gr-button,
+# #sb-system button {
+#     background: #1a1a18 !important;
+#     color: #f0ede6 !important;
+#     border: none !important;
+#     border-radius: 0 !important;
+#     font-family: 'DM Sans', sans-serif !important;
+#     font-weight: 500 !important;
+# }
+#
+# #sb-system .gr-button:hover,
+# #sb-system button:hover {
+#     background: #2a2a28 !important;
+# }
+#
+# #sb-system .gr-button.secondary,
+# #sb-system button[variant="secondary"] {
+#     background: transparent !important;
+#     color: #1a1a18 !important;
+#     border: 1px solid #c8b89a !important;
+# }
+#
+# #sb-system .gr-button.secondary:hover {
+#     background: #f0ede6 !important;
+# }
+#
+# /* Radio buttons */
+# #sb-system .gr-radio input[type="radio"]:checked + span,
+# #sb-system input[type="radio"]:checked {
+#     accent-color: #c8b89a !important;
+# }
+#
+# /* Audio component */
+# #sb-system .gr-audio,
+# #sb-system audio {
+#     background: #faf9f6 !important;
+#     border: 1px solid #d8d5ce !important;
+#     border-radius: 0 !important;
+# }
+#
+# /* Status box */
+# .sb-status-box {
+#     background: #faf9f6 !important;
+#     border: 1px solid #d8d5ce !important;
+#     font-size: 0.85rem !important;
+#     color: #5a5750 !important;
+# }
+#
+# /* ── FEEDBACK SECTION ── */
+# #sb-feedback {
+#     background: #1a1a18;
+#     padding: 80px 48px;
+# }
+#
+# .sb-feedback-header {
+#     display: flex; justify-content: space-between;
+#     align-items: flex-end; margin-bottom: 48px;
+#     flex-wrap: wrap; gap: 24px;
+# }
+#
+# .sb-feedback-cta {
+#     background: transparent; color: #c8b89a;
+#     border: 1px solid rgba(200,184,154,0.4);
+#     padding: 12px 28px; font-size: 0.875rem;
+#     text-decoration: none; transition: all 0.2s;
+#     white-space: nowrap;
+# }
+# .sb-feedback-cta:hover {
+#     background: rgba(200,184,154,0.1);
+#     border-color: #c8b89a;
+# }
+#
+# .sb-feedback-carousel {
+#     display: grid;
+#     grid-template-columns: repeat(3, 1fr);
+#     gap: 24px;
+#     min-height: 240px;
+# }
+#
+# .sb-feedback-card {
+#     background: rgba(240,237,230,0.04);
+#     border: 1px solid rgba(240,237,230,0.08);
+#     padding: 28px 28px 24px;
+#     display: flex; flex-direction: column; gap: 16px;
+#     transition: opacity 0.4s ease, transform 0.4s ease;
+# }
+#
+# .sb-feedback-stars { display: flex; gap: 4px; }
+#
+# .sb-star {
+#     width: 14px; height: 14px;
+#     color: #c8b89a; font-size: 14px;
+# }
+#
+# .sb-feedback-quote {
+#     font-size: 0.95rem; line-height: 1.75;
+#     color: #a8a49c; font-style: italic;
+#     font-weight: 300; flex: 1;
+# }
+#
+# .sb-feedback-name {
+#     font-size: 0.8rem; font-weight: 600;
+#     color: #6a665e; letter-spacing: 0.06em;
+#     text-transform: uppercase;
+# }
+#
+# .sb-feedback-placeholder {
+#     color: #4a4844; font-size: 0.85rem;
+#     font-style: italic; display: flex;
+#     align-items: center; justify-content: center;
+#     height: 100%; text-align: center; padding: 24px;
+#     border: 1px dashed rgba(240,237,230,0.12);
+# }
+#
+# .sb-carousel-controls {
+#     display: flex; justify-content: center;
+#     gap: 8px; margin-top: 32px;
+# }
+#
+# .sb-carousel-dot {
+#     width: 6px; height: 6px; border-radius: 50%;
+#     background: rgba(240,237,230,0.2);
+#     cursor: pointer; transition: background 0.2s;
+#     border: none;
+# }
+# .sb-carousel-dot.active { background: #c8b89a; }
+#
+# /* ── FOOTER ── */
+# #sb-footer {
+#     background: #111110;
+#     padding: 56px 48px 40px;
+# }
+#
+# .sb-footer-grid {
+#     display: grid;
+#     grid-template-columns: 1.5fr 1fr 1fr;
+#     gap: 48px; padding-bottom: 40px;
+#     border-bottom: 1px solid rgba(240,237,230,0.06);
+#     margin-bottom: 32px;
+# }
+#
+# .sb-footer-brand {
+#     font-family: 'DM Serif Display', serif;
+#     font-size: 1.3rem; color: #f0ede6;
 #     margin-bottom: 12px;
 # }
+# .sb-footer-brand span { color: #c8b89a; }
 #
-# .footer-links a,
-# .footer-text {
-#     display: block;
-#     color: #111;
-#     text-decoration: none;
-#     line-height: 2;
+# .sb-footer-tagline {
+#     font-size: 0.85rem; color: #4a4844;
+#     line-height: 1.7; max-width: 260px;
 # }
 #
-# .footer-btn {
-#     display: inline-block;
-#     background: #000;
-#     color: #fff !important;
-#     text-decoration: none;
-#     padding: 15px 30px;
-#     font-weight: 600;
-#     min-width: 170px;
-#     text-align: center;
+# .sb-footer-col-title {
+#     font-size: 0.72rem; font-weight: 600;
+#     letter-spacing: 0.14em; text-transform: uppercase;
+#     color: #6a665e; margin-bottom: 16px;
 # }
 #
-# .gradio-container .block,
-# .gradio-container .gr-box,
-# .gradio-container .gr-panel {
-#     border-radius: 0 !important;
+# .sb-footer-links { display: flex; flex-direction: column; gap: 10px; }
+# .sb-footer-links a {
+#     color: #4a4844; text-decoration: none;
+#     font-size: 0.875rem; transition: color 0.2s;
+# }
+# .sb-footer-links a:hover { color: #c8b89a; }
+#
+# .sb-footer-bottom {
+#     display: flex; justify-content: space-between;
+#     align-items: center; flex-wrap: wrap; gap: 12px;
 # }
 #
-# .gradio-container .gr-button-primary,
-# .gradio-container .gr-button {
-#     background: #000 !important;
-#     border: 1px solid #000 !important;
-#     color: #fff !important;
-#     border-radius: 0 !important;
-#     box-shadow: none !important;
+# .sb-footer-copy {
+#     font-size: 0.8rem; color: #3a3834;
 # }
 #
-# .gradio-container .gr-button-secondary {
-#     background: #f3f3f1 !important;
-#     color: #111 !important;
-#     border: 1px solid #111 !important;
-#     border-radius: 0 !important;
-#     box-shadow: none !important;
+# /* ── RESPONSIVE ── */
+# @media (max-width: 900px) {
+#     #sb-nav { padding: 0 24px; }
+#     #sb-hero, #sb-how, #sb-demo-video, #sb-samples,
+#     #sb-system, #sb-feedback, #sb-footer { padding-left: 24px; padding-right: 24px; }
+#     .sb-feedback-carousel { grid-template-columns: 1fr; }
+#     .sb-footer-grid { grid-template-columns: 1fr; gap: 32px; }
+#     .sb-nav-links { display: none; }
+#     .sb-stats-strip { gap: 32px; }
 # }
 #
-# .gradio-container textarea,
-# .gradio-container input,
-# .gradio-container .wrap,
-# .gradio-container .gr-textbox,
-# .gradio-container .gr-audio,
-# .gradio-container .gr-radio,
-# .gradio-container .gr-group {
-#     border-radius: 0 !important;
+# @media (max-width: 640px) {
+#     .sb-steps { grid-template-columns: 1fr; }
+#     .sb-samples-grid { grid-template-columns: 1fr; }
 # }
 #
-# #demo-area .gr-group,
-# #demo-area .gr-box,
-# #demo-area .gr-form,
-# #demo-area .gr-column {
-#     background: transparent !important;
-#     border: none !important;
-#     box-shadow: none !important;
-# }
-#
-# #demo-area label,
-# #demo-area .gradio-container label {
-#     font-weight: 700 !important;
-#     color: #111 !important;
-# }
-#
-# #demo-area .gr-textbox,
-# #demo-area .gr-audio,
-# #demo-area .gr-radio {
-#     background: rgba(255,255,255,0.82) !important;
-#     border: 1px solid rgba(0,0,0,0.12) !important;
-#     padding: 8px !important;
-# }
-#
-# .small-muted {
-#     color: #666;
-#     font-size: 0.95rem;
-#     line-height: 1.7;
-# }
-#
-# @media (max-width: 1000px) {
-#     .card-grid,
-#     .feedback-grid,
-#     .footer-grid {
-#         grid-template-columns: 1fr;
-#     }
-#
-#     .nav-inner {
-#         flex-direction: column;
-#         align-items: stretch;
-#     }
-#
-#     .nav-links {
-#         gap: 18px;
-#     }
-#
-#     .hero-section,
-#     .section-wrap,
-#     .footer {
-#         padding-left: 24px;
-#         padding-right: 24px;
-#     }
-# }
+# /* Gradio overrides */
+# .gradio-container .block { border-radius: 0 !important; }
+# footer.svelte-1rjryqp { display: none !important; }
 # """
 #
 #
 # # =========================================================
 # # UI
 # # =========================================================
-# with gr.Blocks(css=CUSTOM_CSS, title="SpeechBridge") as demo:
+# sb_theme = gr.themes.Base(
+#     primary_hue=gr.themes.colors.stone,
+#     secondary_hue=gr.themes.colors.stone,
+#     neutral_hue=gr.themes.colors.stone,
+#     font=[gr.themes.GoogleFont("DM Sans"), "sans-serif"],
+# ).set(
+#     button_primary_background_fill="#1a1a18",
+#     button_primary_background_fill_hover="#2a2a28",
+#     button_primary_text_color="#f0ede6",
+#     button_secondary_background_fill="transparent",
+#     button_secondary_background_fill_hover="#f0ede6",
+#     button_secondary_text_color="#1a1a18",
+#     button_secondary_border_color="#c8b89a",
+#     block_background_fill="#faf9f6",
+#     block_border_color="#d8d5ce",
+#     block_label_text_color="#1a1a18",
+#     input_background_fill="#faf9f6",
+#     input_border_color="#d8d5ce",
+#     body_background_fill="#f0ede6",
+#     body_text_color="#1a1a18",
+#     color_accent_soft="#c8b89a",
+#     checkbox_background_color_selected="#c8b89a",
+#     checkbox_border_color_selected="#c8b89a",
+#     radio_circle="#c8b89a",
+# )
+#
+# with gr.Blocks(css=CUSTOM_CSS, theme=sb_theme, title="SpeechBridge") as demo:
+#
+#     # ── NAV ──
 #     gr.HTML("""
-#     <div id="main-wrap">
-#         <div id="top-nav">
-#             <div class="nav-inner">
-#                 <div class="brand-wrap">
-#                     <div class="brand-logo"></div>
-#                     <div class="brand-text">
-#                         <div class="brand-title">SpeechBridge</div>
-#                         <div class="brand-sub">French to English translation</div>
-#                     </div>
-#                 </div>
+#     <nav id="sb-nav">
+#         <div class="sb-logo">Speech<span>Bridge</span></div>
+#         <div class="sb-nav-links">
+#             <a href="#sb-how">How it works</a>
+#             <a href="#sb-samples">Try a sample</a>
+#             <a href="#sb-system">Demo</a>
+#             <a href="#sb-feedback">Feedback</a>
+#         </div>
+#         <a class="sb-nav-cta" href="#sb-system">Try it yourself</a>
+#     </nav>
+#     """)
 #
-#                 <div class="nav-links">
-#                     <a href="#home">Home</a>
-#                     <a href="#about">About</a>
-#                     <a href="#pipeline">Our Offering</a>
-#                     <a href="#contact">Contact</a>
-#                 </div>
-#
-#                 <a class="nav-btn" href="#contact">Contact Us</a>
+#     # ── HERO ──
+#     gr.HTML("""
+#     <section id="sb-hero">
+#         <div class="sb-hero-eyebrow">French → English · Speech Translation</div>
+#         <h1 class="sb-hero-title">
+#             Speak French.<br><em>Be heard</em> in English.
+#         </h1>
+#         <p class="sb-hero-desc">
+#             SpeechBridge translates spoken French into English — preserving not just
+#             the words, but the voice, tone, and character of the original speaker.
+#         </p>
+#         <div class="sb-hero-actions">
+#             <a class="sb-btn-primary" href="#sb-system">Try it yourself</a>
+#             <a class="sb-btn-ghost" href="#sb-how">See how it works</a>
+#         </div>
+#         <div class="sb-stats-strip">
+#             <div class="sb-stat-item">
+#                 <div class="sb-stat-num">2</div>
+#                 <div class="sb-stat-label">Languages</div>
+#             </div>
+#             <div class="sb-stat-item">
+#                 <div class="sb-stat-num">~0.81</div>
+#                 <div class="sb-stat-label">Voice similarity</div>
+#             </div>
+#             <div class="sb-stat-item">
+#                 <div class="sb-stat-num">2</div>
+#                 <div class="sb-stat-label">Output modes</div>
+#             </div>
+#             <div class="sb-stat-item">
+#                 <div class="sb-stat-num">End-to-end</div>
+#                 <div class="sb-stat-label">Pipeline</div>
 #             </div>
 #         </div>
+#         <div class="sb-waveform">
+#             <svg viewBox="0 0 420 180" xmlns="http://www.w3.org/2000/svg" width="420" height="180">
+#                 <polyline points="0,90 20,60 40,110 60,40 80,120 100,55 120,100 140,30 160,130 180,50 200,95 220,25 240,140 260,45 280,105 300,35 320,125 340,60 360,100 380,50 400,80 420,90" fill="none" stroke="#c8b89a" stroke-width="1.5" opacity="0.6"/>
+#                 <polyline points="0,90 15,75 30,100 50,55 70,115 90,70 110,95 130,45 150,120 170,65 190,90 210,40 230,130 250,55 270,100 290,50 310,115 330,70 350,90 370,60 390,85 420,90" fill="none" stroke="#c8b89a" stroke-width="0.8" opacity="0.3"/>
+#             </svg>
+#         </div>
+#     </section>
 #     """)
 #
-#     gr.HTML(f"""
-#         <section id="home" class="hero-section">
-#             <div class="hero-title">{HERO_TITLE}</div>
-#             <div class="hero-subtitle">{HERO_SUBTITLE}</div>
-#             <div class="hero-desc">{ABOUT_TEXT}</div>
-#             <a class="hero-cta" href="#pipeline">Explore the System</a>
-#         </section>
-#     """)
-#
-#     gr.HTML(f"""
-#         <section id="about" class="section-wrap section-light">
-#             <div class="section-title">More about the pipeline</div>
-#             <div class="section-subtext">
-#                 SpeechBridge currently demonstrates a modular French-to-English spoken translation workflow.
-#                 Users can record or upload audio, select a translation mode, and receive translated English
-#                 text and speech output through a clean evaluation interface.
-#             </div>
-#
-#             <div class="card-grid">
-#                 <div class="info-card">
-#                     <h3>Speech input</h3>
-#                     <p>{PIPELINE_CARD_1}</p>
-#                 </div>
-#
-#                 <div class="info-card">
-#                     <h3>Translation mode</h3>
-#                     <p>{PIPELINE_CARD_2}</p>
-#                 </div>
-#
-#                 <div class="info-card">
-#                     <h3>Generated output</h3>
-#                     <p>{PIPELINE_CARD_3}</p>
-#                 </div>
-#             </div>
-#
-#             <div class="center-btn-wrap">
-#                 <a class="center-btn" href="#pipeline">Our offering</a>
-#             </div>
-#         </section>
-#     """)
-#
+#     # ── HOW IT WORKS ──
 #     gr.HTML("""
-#         <section id="pipeline" class="section-wrap section-light">
-#             <div class="section-title">Try SpeechBridge</div>
-#             <div class="demo-note">
-#                 Record or upload a short French speech sample, then choose whether to run
-#                 standard translation or open the voice cloning pathway currently under development.
+#     <section id="sb-how">
+#         <div class="sb-section-label">How it works</div>
+#         <h2 class="sb-section-title">From spoken French to English speech in three steps</h2>
+#         <div class="sb-steps">
+#             <div class="sb-step">
+#                 <div class="sb-step-num">01</div>
+#                 <div class="sb-step-title">Upload your audio</div>
+#                 <div class="sb-step-desc">
+#                     Record or upload a French speech clip. Any format works —
+#                     the system handles conversion automatically.
+#                 </div>
 #             </div>
+#             <div class="sb-step">
+#                 <div class="sb-step-num">02</div>
+#                 <div class="sb-step-title">Choose your output mode</div>
+#                 <div class="sb-step-desc">
+#                     Select standard translation for clean English speech,
+#                     or voice cloning to preserve the original speaker's voice.
+#                 </div>
+#             </div>
+#             <div class="sb-step">
+#                 <div class="sb-step-num">03</div>
+#                 <div class="sb-step-title">Receive translated speech</div>
+#                 <div class="sb-step-desc">
+#                     Get the translated English text and a synthesised audio
+#                     output — with voice cloning, it sounds like the same person.
+#                 </div>
+#             </div>
+#         </div>
+#     </section>
+#     """)
 #
-#             <div class="demo-shell">
-#                 <div class="demo-top-bar">SpeechBridge demonstration interface</div>
-#                 <div id="demo-area" style="padding: 28px 26px 22px 26px;">
+#     # ── DEMO VIDEO ──
+#     gr.HTML("""
+#     <section id="sb-demo-video">
+#         <div class="sb-video-wrap">
+#             <div class="sb-section-label" style="color:#c8b89a;">See it in action</div>
+#             <h2 class="sb-section-title" style="color:#f0ede6; margin-bottom:0;">
+#                 Watch a full translation run
+#             </h2>
+#             <div class="sb-video-container">
+#                 <video id="sb-video" controls style="display:none;">
+#                     <source src="demo.mp4" type="video/mp4">
+#                 </video>
+#                 <div class="sb-video-placeholder" id="sb-video-placeholder">
+#                     <div class="sb-play-icon">
+#                         <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+#                             <path d="M7 4l10 6-10 6V4z" fill="#c8b89a"/>
+#                         </svg>
+#                     </div>
+#                     <p>Demo video coming soon</p>
+#                 </div>
+#             </div>
+#         </div>
+#         <script>
+#         (function() {
+#             var vid = document.getElementById('sb-video');
+#             var placeholder = document.getElementById('sb-video-placeholder');
+#             if (vid) {
+#                 vid.addEventListener('canplay', function() {
+#                     placeholder.style.display = 'none';
+#                     vid.style.display = 'block';
+#                 });
+#                 vid.addEventListener('error', function() {
+#                     placeholder.style.display = 'flex';
+#                     vid.style.display = 'none';
+#                 });
+#             }
+#         })();
+#         </script>
+#     </section>
+#     """)
+#
+#     # ── AUDIO SAMPLES ──
+#     gr.HTML("""
+#     <section id="sb-samples">
+#         <div class="sb-section-label">Sample audio</div>
+#         <h2 class="sb-section-title">Try it with one of our clips</h2>
+#         <p style="color:#5a5750; font-size:0.95rem; line-height:1.7; max-width:560px; margin-bottom:0; font-weight:300;">
+#             Download any of the French speech samples below and upload them into the system to see it in action.
+#         </p>
+#         <div class="sb-samples-grid">
+#             <div class="sb-sample-card">
+#                 <div class="sb-sample-label">Sample 01</div>
+#                 <div class="sb-sample-name">Child's voice</div>
+#                 <div class="sb-sample-actions">
+#                     <a class="sb-sample-btn sb-sample-dl" href="audio_samples/sample_1.wav" download>Download</a>
+#                 </div>
+#             </div>
+#             <div class="sb-sample-card">
+#                 <div class="sb-sample-label">Sample 02</div>
+#                 <div class="sb-sample-name">Adult female voice</div>
+#                 <div class="sb-sample-actions">
+#                     <a class="sb-sample-btn sb-sample-dl" href="audio_samples/sample_2.wav" download>Download</a>
+#                 </div>
+#             </div>
+#             <div class="sb-sample-card">
+#                 <div class="sb-sample-label">Sample 03</div>
+#                 <div class="sb-sample-name">Adult male voice</div>
+#                 <div class="sb-sample-actions">
+#                     <a class="sb-sample-btn sb-sample-dl" href="audio_samples/sample_3.wav" download>Download</a>
+#                 </div>
+#             </div>
+#             <div class="sb-sample-card">
+#                 <div class="sb-sample-label">Sample 04</div>
+#                 <div class="sb-sample-name">Young female voice</div>
+#                 <div class="sb-sample-actions">
+#                     <a class="sb-sample-btn sb-sample-dl" href="audio_samples/sample_4.wav" download>Download</a>
+#                 </div>
+#             </div>
+#             <div class="sb-sample-card">
+#                 <div class="sb-sample-label">Sample 05</div>
+#                 <div class="sb-sample-name">Elderly voice</div>
+#                 <div class="sb-sample-actions">
+#                     <a class="sb-sample-btn sb-sample-dl" href="audio_samples/sample_5.wav" download>Download</a>
+#                 </div>
+#             </div>
+#         </div>
+#     </section>
+#     """)
+#
+#     # ── SYSTEM DEMO ──
+#     gr.HTML("""
+#     <section id="sb-system">
+#         <div class="sb-section-label">Live demo</div>
+#         <h2 class="sb-section-title">Try SpeechBridge</h2>
+#         <div class="sb-system-shell">
+#             <div class="sb-system-topbar">
+#                 <div class="sb-topbar-dot" style="background:#e85d5d;"></div>
+#                 <div class="sb-topbar-dot" style="background:#e8b85d;"></div>
+#                 <div class="sb-topbar-dot" style="background:#5de87a;"></div>
+#                 <span class="sb-topbar-title">speechbridge — live translation interface</span>
+#             </div>
+#             <div class="sb-system-inner">
 #     """)
 #
 #     with gr.Row():
 #         with gr.Column(scale=1):
 #             model_status = gr.Textbox(
 #                 label="System status",
-#                 value="App ready. Models are lazy-loaded so the interface opens faster.",
-#                 interactive=False,
-#                 lines=3
+#                 value="Models are initialising in the background. Ready shortly.",
+#                 interactive=False, lines=3,
+#                 elem_classes=["sb-status-box"]
 #             )
-#             init_btn = gr.Button("Initialise translation model", variant="secondary")
+#             init_btn = gr.Button("Initialise models manually", variant="secondary")
+#
+#             gr.HTML("""
+#             <div style="margin: 20px 0 8px; font-size:0.8rem; font-weight:600;
+#                         letter-spacing:0.08em; text-transform:uppercase; color:#1a1a18;">
+#                 Input language
+#             </div>
+#             """)
+#
+#             input_lang = gr.Dropdown(
+#                 choices=["French", "More languages coming soon…"],
+#                 value="French", label="", interactive=False
+#             )
+#
+#             gr.HTML("""
+#             <div style="margin: 16px 0 8px; font-size:0.8rem; font-weight:600;
+#                         letter-spacing:0.08em; text-transform:uppercase; color:#1a1a18;">
+#                 Output language
+#             </div>
+#             """)
+#
+#             output_lang = gr.Dropdown(
+#                 choices=["English", "More languages coming soon…"],
+#                 value="English", label="", interactive=False
+#             )
 #
 #             mode = gr.Radio(
-#                 choices=[
-#                     "Translate without voice cloning",
-#                     "Translate with voice cloning"
-#                 ],
+#                 choices=["Translate without voice cloning", "Translate with voice cloning"],
 #                 value="Translate without voice cloning",
 #                 label="Translation mode"
 #             )
@@ -784,11 +1102,15 @@
 #             audio_input = gr.Audio(
 #                 sources=["upload", "microphone"],
 #                 type="filepath",
-#                 label="Record or upload French speech audio"
+#                 label="Upload or record French speech",
+#                 format="wav",
 #             )
 #
 #             gr.Markdown(
-#                 "<div class='small-muted'>Recommended input, short and clear speech under 20 seconds for smoother CPU performance during demonstration.</div>"
+#                 "<div style='font-size:0.8rem;color:#8a8780;line-height:1.6;margin-top:6px;'>"
+#                 "Upload any audio format or record directly. For voice cloning, the same "
+#                 "clip is used as the speaker reference — clear speech gives the best results."
+#                 "</div>"
 #             )
 #
 #             translate_btn = gr.Button("Run translation", variant="primary")
@@ -796,115 +1118,180 @@
 #         with gr.Column(scale=1):
 #             translated_text = gr.Textbox(
 #                 label="English translation",
-#                 lines=8,
+#                 lines=6,
 #                 placeholder="Translated English text will appear here."
 #             )
+#             output_audio = gr.Audio(type="filepath", label="Generated English speech")
+#             runtime_info = gr.Textbox(label="Runtime breakdown", lines=6, interactive=False)
+#             pipeline_status = gr.Textbox(label="Status", lines=3, interactive=False)
 #
-#             output_audio = gr.Audio(
-#                 type="filepath",
-#                 label="Generated English speech"
-#             )
+#     gr.HTML("</div></div></section>")
 #
-#             runtime_info = gr.Textbox(
-#                 label="Runtime information",
-#                 lines=5,
-#                 interactive=False
-#             )
-#
-#             pipeline_status = gr.Textbox(
-#                 label="Processing feedback",
-#                 lines=4,
-#                 interactive=False
-#             )
-#
-#     gr.HTML("""
-#                 </div>
-#             </div>
-#         </section>
-#     """)
-#
+#     # ── FEEDBACK ──
 #     gr.HTML(f"""
-#         <section class="section-wrap section-dark">
-#             <div class="section-title">Future development</div>
-#             <div class="section-subtext">{FUTURE_WORK_TEXT}</div>
-#         </section>
+#     <section id="sb-feedback">
+#         <div class="sb-feedback-header">
+#             <div>
+#                 <div class="sb-section-label" style="color:#c8b89a;">User feedback</div>
+#                 <h2 class="sb-section-title" style="color:#f0ede6; margin-bottom:0;">
+#                     What people are saying
+#                 </h2>
+#             </div>
+#             <a class="sb-feedback-cta" href="{GOOGLE_FORM_URL}" target="_blank">
+#                 Share your feedback →
+#             </a>
+#         </div>
+#
+#         <div class="sb-feedback-carousel" id="sb-feedback-carousel">
+#             <div class="sb-feedback-placeholder">
+#                 <span>Feedback will appear here once responses are submitted.</span>
+#             </div>
+#         </div>
+#
+#         <div class="sb-carousel-controls" id="sb-carousel-controls" style="display:none;"></div>
+#     </section>
+#
+#     <script>
+#     (function() {{
+#         const SHEET_URL = 'https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:json&sheet=Sheet1';
+#         const carousel = document.getElementById('sb-feedback-carousel');
+#         const controls = document.getElementById('sb-carousel-controls');
+#
+#         let allFeedback = [];
+#         let currentPage = 0;
+#         const PER_PAGE = 3;
+#         let autoTimer = null;
+#
+#         function renderStars(n) {{
+#             let s = '';
+#             const filled = Math.round(n || 0);
+#             for (let i = 1; i <= 5; i++) {{
+#                 s += '<span class="sb-star">' + (i <= filled ? '★' : '☆') + '</span>';
+#             }}
+#             return s;
+#         }}
+#
+#         function renderPage(page) {{
+#             const start = page * PER_PAGE;
+#             const slice = allFeedback.slice(start, start + PER_PAGE);
+#             carousel.innerHTML = '';
+#
+#             slice.forEach(function(fb) {{
+#                 const avgRating = ((fb.r1 || 0) + (fb.r3 || 0)) / 2;
+#                 const card = document.createElement('div');
+#                 card.className = 'sb-feedback-card';
+#                 card.innerHTML =
+#                     '<div class="sb-feedback-stars">' + renderStars(avgRating) + '</div>' +
+#                     '<div class="sb-feedback-quote">' + (fb.comment || 'No comment provided.') + '</div>' +
+#                     '<div class="sb-feedback-name">' + (fb.name || 'Anonymous') + '</div>';
+#                 carousel.appendChild(card);
+#             }});
+#
+#             // update dots
+#             const dots = controls.querySelectorAll('.sb-carousel-dot');
+#             dots.forEach(function(d, i) {{
+#                 d.classList.toggle('active', i === page);
+#             }});
+#
+#             currentPage = page;
+#         }}
+#
+#         function buildControls(totalPages) {{
+#             controls.innerHTML = '';
+#             if (totalPages <= 1) return;
+#             controls.style.display = 'flex';
+#             for (let i = 0; i < totalPages; i++) {{
+#                 const dot = document.createElement('button');
+#                 dot.className = 'sb-carousel-dot' + (i === 0 ? ' active' : '');
+#                 dot.addEventListener('click', function() {{
+#                     clearInterval(autoTimer);
+#                     renderPage(i);
+#                 }});
+#                 controls.appendChild(dot);
+#             }}
+#         }}
+#
+#         function startAutoRotate(totalPages) {{
+#             if (totalPages <= 1) return;
+#             autoTimer = setInterval(function() {{
+#                 renderPage((currentPage + 1) % totalPages);
+#             }}, 5000);
+#         }}
+#
+#         function loadFeedback() {{
+#             fetch(SHEET_URL)
+#                 .then(function(r) {{ return r.text(); }})
+#                 .then(function(text) {{
+#                     const json = JSON.parse(text.substring(text.indexOf('(') + 1, text.lastIndexOf(')')));
+#                     const rows = json.table && json.table.rows ? json.table.rows : [];
+#
+#                     allFeedback = rows.map(function(row) {{
+#                         const c = row.c || [];
+#                         const nameVal = c[5] && c[5].v ? String(c[5].v).trim() : 'Anonymous';
+#                         return {{
+#                             r1: c[1] && c[1].v ? Number(c[1].v) : 0,
+#                             r2: c[2] && c[2].v ? Number(c[2].v) : 0,
+#                             r3: c[3] && c[3].v ? Number(c[3].v) : 0,
+#                             comment: c[4] && c[4].v ? String(c[4].v) : '',
+#                             name: nameVal.toLowerCase() === 'anonymous' ? 'Anonymous' : nameVal,
+#                         }};
+#                     }}).filter(function(fb) {{
+#                         return fb.comment || fb.r1;
+#                     }});
+#
+#                     if (allFeedback.length === 0) return;
+#
+#                     const totalPages = Math.ceil(allFeedback.length / PER_PAGE);
+#                     buildControls(totalPages);
+#                     renderPage(0);
+#                     startAutoRotate(totalPages);
+#                 }})
+#                 .catch(function(e) {{
+#                     console.log('Feedback load failed:', e);
+#                 }});
+#         }}
+#
+#         setTimeout(loadFeedback, 1000);
+#     }})();
+#     </script>
 #     """)
 #
+#     # ── FOOTER ──
 #     gr.HTML("""
-#         <section class="section-wrap section-light">
-#             <div class="section-title">The spoken word when it matters.</div>
-#     """)
-#
-#     gr.HTML(f"""
-#             <div class="feedback-grid">
-#                 <div class="feedback-card">
-#                     <div class="feedback-avatar"></div>
-#                     <div class="quote-mark">”</div>
-#                     <div class="feedback-text">{FEEDBACK_1}</div>
-#                     <div class="feedback-name">Trial Feedback 1</div>
-#                 </div>
-#
-#                 <div class="feedback-card">
-#                     <div class="feedback-avatar" style="background: linear-gradient(135deg, #9da1b7, #53576f);"></div>
-#                     <div class="quote-mark">”</div>
-#                     <div class="feedback-text">{FEEDBACK_2}</div>
-#                     <div class="feedback-name">Trial Feedback 2</div>
-#                 </div>
-#
-#                 <div class="feedback-card">
-#                     <div class="feedback-avatar" style="background: linear-gradient(135deg, #b9a5a0, #6b5e5a);"></div>
-#                     <div class="quote-mark">”</div>
-#                     <div class="feedback-text">{FEEDBACK_3}</div>
-#                     <div class="feedback-name">Trial Feedback 3</div>
+#     <footer id="sb-footer">
+#         <div class="sb-footer-grid">
+#             <div>
+#                 <div class="sb-footer-brand">Speech<span>Bridge</span></div>
+#                 <p class="sb-footer-tagline">
+#                     A speech-to-speech translation system combining neural translation
+#                     with speaker-preserving voice cloning.
+#                 </p>
+#             </div>
+#             <div>
+#                 <div class="sb-footer-col-title">Navigation</div>
+#                 <div class="sb-footer-links">
+#                     <a href="#sb-how">How it works</a>
+#                     <a href="#sb-samples">Audio samples</a>
+#                     <a href="#sb-system">Live demo</a>
+#                     <a href="#sb-feedback">Feedback</a>
 #                 </div>
 #             </div>
-#         </section>
-#     """)
-#
-#     gr.HTML("""
-#         <footer id="contact" class="footer">
-#             <div class="footer-grid">
-#                 <div>
-#                     <div class="brand-wrap" style="align-items:flex-start;">
-#                         <div class="brand-logo" style="width:28px;height:28px;margin-top:2px;"></div>
-#                         <div class="brand-text">
-#                             <div class="brand-title" style="font-size:1.35rem;">SpeechBridge</div>
-#                             <div class="brand-sub">French to English translation</div>
-#                         </div>
-#                     </div>
-#                 </div>
-#
-#                 <div>
-#                     <div class="footer-title">Home</div>
-#                     <div class="footer-links">
-#                         <a href="#home">Home</a>
-#                         <a href="#about">About</a>
-#                         <a href="#pipeline">Our Offering</a>
-#                         <a href="#contact">Contact</a>
-#                     </div>
-#                 </div>
-#
-#                 <div>
-#                     <div class="footer-title">Project details</div>
-#                     <div class="footer-text">French to English speech translation demo</div>
-#                     <div class="footer-text">Whisper-medium + LoRA + Piper TTS</div>
-#                     <div class="footer-text">University final year project</div>
-#                     <div class="footer-text">Voice cloning pathway in progress</div>
-#                 </div>
-#
-#                 <div>
-#                     <a class="footer-btn" href="#contact">Contact Us</a>
+#             <div>
+#                 <div class="sb-footer-col-title">Contact</div>
+#                 <div class="sb-footer-links">
+#                     <a href="#sb-feedback">Leave feedback</a>
 #                 </div>
 #             </div>
-#         </footer>
-#     </div>
+#         </div>
+#         <div class="sb-footer-bottom">
+#             <span class="sb-footer-copy">SpeechBridge — University Final Year Project</span>
+#             <span class="sb-footer-copy">French → English Speech Translation</span>
+#         </div>
+#     </footer>
 #     """)
 #
-#     init_btn.click(
-#         fn=initialise_models,
-#         outputs=model_status
-#     )
-#
+#     # ── EVENTS ──
+#     init_btn.click(fn=initialise_models, outputs=model_status)
 #     translate_btn.click(
 #         fn=run_app,
 #         inputs=[mode, audio_input],
@@ -913,12 +1300,15 @@
 #
 #
 # if __name__ == "__main__":
+#     init_thread = threading.Thread(target=background_init, daemon=True)
+#     init_thread.start()
 #     demo.launch()
 
 import re
 import time
 import uuid
 import subprocess
+import threading
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -927,29 +1317,12 @@ import numpy as np
 import torch
 import librosa
 import soundfile as sf
-import torchaudio
+import noisereduce as nr
 
-from transformers import (
-    WhisperProcessor,
-    WhisperForConditionalGeneration,
-    SpeechT5Processor,
-    SpeechT5ForTextToSpeech,
-    SpeechT5HifiGan,
-)
+from transformers import WhisperProcessor, WhisperForConditionalGeneration
 from peft import PeftModel
-
-if not hasattr(torchaudio, "set_audio_backend"):
-    def _dummy_set_audio_backend(_backend):
-        return None
-    torchaudio.set_audio_backend = _dummy_set_audio_backend
-
-if not hasattr(torchaudio, "get_audio_backend"):
-    def _dummy_get_audio_backend():
-        return "soundfile"
-    torchaudio.get_audio_backend = _dummy_get_audio_backend
-
-from speechbrain.pretrained import EncoderClassifier
-
+from TTS.api import TTS
+from resemblyzer import VoiceEncoder, preprocess_wav
 
 # =========================================================
 # Config
@@ -957,448 +1330,320 @@ from speechbrain.pretrained import EncoderClassifier
 BASE_MODEL_ID = "openai/whisper-medium"
 LORA_DIR = Path("final_lora")
 
-# Standard non-cloning TTS
 PIPER_DIR = Path("piper_models")
 PIPER_VOICE = "en_US-lessac-medium"
 PIPER_MODEL = PIPER_DIR / f"{PIPER_VOICE}.onnx"
 PIPER_CFG = PIPER_DIR / f"{PIPER_VOICE}.onnx.json"
 
-# Final chosen voice cloning stack
-# SPEECHT5_MODEL_ID = "microsoft/speecht5_tts"
-# SPEECHT5_VOCODER_ID = "microsoft/speecht5_hifigan"
-# XVECTOR_MODEL_ID = "speechbrain/spkrec-xvect-voxceleb"
+XTTS_MODEL_NAME = "tts_models/multilingual/multi-dataset/xtts_v2"
+XTTS_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+TORCH_DTYPE = torch.float16 if torch.cuda.is_available() else torch.float32
 
-SPEECHT5_MODEL_PATH = "models/speecht5_model"
-SPEECHT5_PROCESSOR_PATH = "models/speecht5_processor"
-SPEECHT5_VOCODER_PATH = "models/speecht5_vocoder"
-XVECTOR_PATH = "models/xvector"
+XTTS_TEMPERATURE = 0.60
+XTTS_REPETITION_PENALTY = 5.0
+XTTS_TOP_K = 50
+XTTS_TOP_P = 0.85
+XTTS_SPEED = 1.0
+MAX_CHUNK_CHARS = 180
 
-DEVICE = "cpu"
-TORCH_DTYPE = torch.float32
-MAX_AUDIO_SECONDS = 20
-TARGET_SR = 16000
+WHISPER_MAX_SECONDS = 60
+XTTS_REF_MAX_SECONDS = 30
+WHISPER_SR = 16000
+XTTS_SR = 22050
+XTTS_OUTPUT_SR = 24000
 
 OUT_DIR = Path("outputs")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
+TEMP_DIR = Path("outputs/temp")
+TEMP_DIR.mkdir(parents=True, exist_ok=True)
+
+FFMPEG_BIN = "ffmpeg"
+
+# Google Sheets config
+SHEET_ID = "1C2ZFxtJ2H4TwnakoV_buVzlNIOkZ2GnBO3o9sIXHR2I"
+GOOGLE_FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLScrM4CSuzdfhGflaliiDkBLl4vasHCqA3MQcVI_nS5ZglkeCw/viewform"
+SHEETS_API_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:json"
 
 torch.set_num_threads(max(1, min(4, torch.get_num_threads())))
 
-# Lazy-loaded globals
 ST_PROC = None
 ST_MODEL = None
-
-TTS_PROC = None
-TTS_MODEL = None
-VOCODER = None
-SPKREC = None
-
+XTTS_MODEL = None
 TRANSLATION_READY = False
-CLONE_READY = False
+XTTS_READY = False
+
+# Audio sample placeholders
+AUDIO_SAMPLES = [
+    {"name": "Sample 1 — Child's voice", "file": "audio_samples/sample_1.wav"},
+    {"name": "Sample 2 — Adult female voice", "file": "audio_samples/sample_2.wav"},
+    {"name": "Sample 3 — Adult male voice", "file": "audio_samples/sample_3.wav"},
+    {"name": "Sample 4 — Young female voice", "file": "audio_samples/sample_4.wav"},
+    {"name": "Sample 5 — Elderly voice", "file": "audio_samples/sample_5.wav"},
+]
 
 
 # =========================================================
-# Backend utility
+# Audio utilities
+# =========================================================
+def ffmpeg_convert_to_wav(input_path: str, output_path: str, sr: int) -> None:
+    cmd = [
+        FFMPEG_BIN, "-y", "-i", input_path,
+        "-ac", "1", "-ar", str(sr), "-sample_fmt", "s16",
+        output_path
+    ]
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def load_audio_for_whisper(audio_path: str) -> Tuple[np.ndarray, int]:
+    converted = str(TEMP_DIR / f"whisper_{uuid.uuid4().hex}.wav")
+    ffmpeg_convert_to_wav(audio_path, converted, sr=WHISPER_SR)
+    audio, _ = librosa.load(converted, sr=WHISPER_SR, mono=True)
+    max_samples = WHISPER_MAX_SECONDS * WHISPER_SR
+    if len(audio) > max_samples:
+        audio = audio[:max_samples]
+    return audio, WHISPER_SR
+
+
+def prepare_xtts_reference(audio_path: str) -> str:
+    converted = str(TEMP_DIR / f"xtts_ref_raw_{uuid.uuid4().hex}.wav")
+    ffmpeg_convert_to_wav(audio_path, converted, sr=XTTS_SR)
+    audio, _ = librosa.load(converted, sr=XTTS_SR, mono=True)
+    max_samples = XTTS_REF_MAX_SECONDS * XTTS_SR
+    if len(audio) > max_samples:
+        audio = audio[:max_samples]
+    if len(audio) > XTTS_SR:
+        noise_clip = audio[:int(0.5 * XTTS_SR)]
+    else:
+        noise_clip = audio[:max(1, len(audio) // 4)]
+    try:
+        audio = nr.reduce_noise(y=audio, sr=XTTS_SR, y_noise=noise_clip, prop_decrease=0.75, stationary=False)
+    except Exception:
+        pass
+    out_path = str(TEMP_DIR / f"xtts_ref_clean_{uuid.uuid4().hex}.wav")
+    sf.write(out_path, audio, XTTS_SR)
+    return out_path
+
+
+# =========================================================
+# Text utilities
 # =========================================================
 def normalise_text_for_tts(text: str) -> str:
-    text = text.strip()
-    text = re.sub(r"\s+", " ", text)
-    return text
+    return re.sub(r"\s+", " ", text.strip())
 
 
-def validate_translation_assets() -> Optional[str]:
-    if not LORA_DIR.exists():
-        return f"LoRA folder not found at: {LORA_DIR}"
-    return None
+def split_text_for_xtts(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list:
+    text = str(text).strip()
+    if len(text) <= max_chars:
+        return [text]
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    sentences = [s.strip() for s in sentences if s.strip()]
+    chunks, current = [], ""
+    for sentence in sentences:
+        if not current:
+            current = sentence
+        elif len(current) + 1 + len(sentence) <= max_chars:
+            current += " " + sentence
+        else:
+            chunks.append(current.strip())
+            current = sentence
+    if current:
+        chunks.append(current.strip())
+    final_chunks = []
+    for chunk in chunks:
+        if len(chunk) <= max_chars:
+            final_chunks.append(chunk)
+        else:
+            words, temp = chunk.split(), ""
+            for word in words:
+                if not temp:
+                    temp = word
+                elif len(temp) + 1 + len(word) <= max_chars:
+                    temp += " " + word
+                else:
+                    final_chunks.append(temp.strip())
+                    temp = word
+            if temp:
+                final_chunks.append(temp.strip())
+    return final_chunks
 
 
+# =========================================================
+# Model loading
+# =========================================================
 def validate_piper_assets() -> Optional[str]:
     if not (PIPER_MODEL.exists() and PIPER_CFG.exists()):
-        return (
-            "Piper voice files are missing.\n"
-            f"Expected:\n- {PIPER_MODEL}\n- {PIPER_CFG}\n"
-            f"Run:\npython -m piper.download_voices {PIPER_VOICE} --download-dir {PIPER_DIR}"
-        )
+        return f"Piper voice files missing at {PIPER_DIR}"
     return None
-
-
-def load_audio_mono_16k(path: str, max_seconds: int) -> Tuple[np.ndarray, int]:
-    y, sr = librosa.load(path, sr=TARGET_SR, mono=True)
-    if len(y) > max_seconds * TARGET_SR:
-        y = y[: max_seconds * TARGET_SR]
-    return y, TARGET_SR
-
-
-def piper_tts(text: str, out_wav: Path):
-    cmd = [
-        "piper",
-        "--model", str(PIPER_MODEL),
-        "--config", str(PIPER_CFG),
-        "--output_file", str(out_wav),
-    ]
-    subprocess.run(cmd, input=text.encode("utf-8"), check=True)
 
 
 def load_translation_pipeline() -> str:
     global ST_PROC, ST_MODEL, TRANSLATION_READY
-
-    if TRANSLATION_READY and ST_PROC is not None and ST_MODEL is not None:
+    if TRANSLATION_READY:
         return "Translation model already loaded."
-
-    validation_error = validate_translation_assets()
-    if validation_error:
-        raise RuntimeError(validation_error)
-
+    if not LORA_DIR.exists():
+        raise RuntimeError(f"LoRA folder not found at: {LORA_DIR}")
     t0 = time.time()
-
     ST_PROC = WhisperProcessor.from_pretrained(BASE_MODEL_ID)
-
-    base_model = WhisperForConditionalGeneration.from_pretrained(
-        BASE_MODEL_ID,
-        low_cpu_mem_usage=True
-    ).to(DEVICE)
+    base_model = WhisperForConditionalGeneration.from_pretrained(BASE_MODEL_ID, low_cpu_mem_usage=True).to(DEVICE)
     base_model.eval()
-
     ST_MODEL = PeftModel.from_pretrained(base_model, str(LORA_DIR)).to(DEVICE)
     ST_MODEL.eval()
-
     TRANSLATION_READY = True
     return f"Translation model loaded in {time.time() - t0:.2f}s."
 
 
-def load_voice_clone_models() -> str:
-    global TTS_PROC, TTS_MODEL, VOCODER, SPKREC, CLONE_READY
-
-    if CLONE_READY and all(x is not None for x in [TTS_PROC, TTS_MODEL, VOCODER, SPKREC]):
-        return "Voice cloning models already loaded."
-
+def load_xtts_model() -> str:
+    global XTTS_MODEL, XTTS_READY
+    if XTTS_READY:
+        return "XTTS model already loaded."
     t0 = time.time()
-
-    # TTS_PROC = SpeechT5Processor.from_pretrained(SPEECHT5_MODEL_ID)
-    #
-    # TTS_MODEL = SpeechT5ForTextToSpeech.from_pretrained(
-    #     SPEECHT5_MODEL_ID
-    # ).to(DEVICE)
-    # TTS_MODEL.eval()
-    #
-    # VOCODER = SpeechT5HifiGan.from_pretrained(
-    #     SPEECHT5_VOCODER_ID
-    # ).to(DEVICE)
-    # VOCODER.eval()
-    #
-    # SPKREC = EncoderClassifier.from_hparams(
-    #     source=XVECTOR_MODEL_ID,
-    #     run_opts={"device": DEVICE},
-    #     savedir="pretrained_models/spkrec-xvect-voxceleb"
-    # )
-
-    TTS_PROC = SpeechT5Processor.from_pretrained(SPEECHT5_PROCESSOR_PATH)
-
-    TTS_MODEL = SpeechT5ForTextToSpeech.from_pretrained(
-        SPEECHT5_MODEL_PATH
-    ).to(DEVICE)
-
-    VOCODER = SpeechT5HifiGan.from_pretrained(
-        SPEECHT5_VOCODER_PATH
-    ).to(DEVICE)
-
-    SPKREC = EncoderClassifier.from_hparams(
-        source=XVECTOR_PATH,
-        savedir=XVECTOR_PATH,
-        run_opts={"device": DEVICE}
-    )
-
-    CLONE_READY = True
-    return f"Voice cloning models loaded in {time.time() - t0:.2f}s."
+    XTTS_MODEL = TTS(XTTS_MODEL_NAME).to(XTTS_DEVICE)
+    XTTS_READY = True
+    return f"XTTS loaded in {time.time() - t0:.2f}s."
 
 
+def initialise_models() -> str:
+    messages = []
+    try:
+        messages.append(load_translation_pipeline())
+    except Exception as e:
+        messages.append(f"Translation init failed: {e}")
+    try:
+        err = validate_piper_assets()
+        messages.append("Piper TTS assets found." if not err else f"Piper: {err}")
+    except Exception as e:
+        messages.append(f"Piper check failed: {e}")
+    try:
+        messages.append(load_xtts_model())
+    except Exception as e:
+        messages.append(f"XTTS init failed: {e}")
+    return "\n".join(messages)
+
+
+def background_init():
+    print("Background model initialisation started...")
+    msg = initialise_models()
+    print(f"Models ready:\n{msg}")
+
+
+# =========================================================
+# Inference
+# =========================================================
 @torch.inference_mode()
 def translate_fr_to_en(audio_16k: np.ndarray, sr: int) -> str:
     inputs = ST_PROC(audio_16k, sampling_rate=sr, return_tensors="pt")
     input_features = inputs["input_features"].to(DEVICE, dtype=TORCH_DTYPE)
-
-    gen_ids = ST_MODEL.generate(
-        input_features=input_features,
-        task="translate",
-        language="en",
-        num_beams=1,
-        max_new_tokens=192,
-    )
-
-    text = ST_PROC.batch_decode(gen_ids, skip_special_tokens=True)[0]
-    return text.strip()
+    gen_ids = ST_MODEL.generate(input_features=input_features, task="translate", language="en", num_beams=1, max_new_tokens=192)
+    return ST_PROC.batch_decode(gen_ids, skip_special_tokens=True)[0].strip()
 
 
-@torch.inference_mode()
-def extract_xvector_embedding(audio_path: str) -> torch.Tensor:
-    wav, sr = librosa.load(audio_path, sr=TARGET_SR, mono=True)
-    if wav.size == 0:
-        raise RuntimeError("Reference audio is empty.")
-
-    wav = wav.astype(np.float32)
-
-    max_samples = MAX_AUDIO_SECONDS * TARGET_SR
-    if len(wav) > max_samples:
-        wav = wav[:max_samples]
-
-    wav_tensor = torch.tensor(wav, dtype=TORCH_DTYPE).unsqueeze(0).to(DEVICE)
-    wav_lens = torch.tensor([1.0], dtype=TORCH_DTYPE).to(DEVICE)
-
-    emb = SPKREC.encode_batch(wav_tensor, wav_lens)
-
-    if emb.ndim == 3:
-        emb = emb.squeeze(1)
-
-    if emb.ndim != 2 or emb.shape[-1] != 512:
-        raise RuntimeError(f"Unexpected x-vector shape: {tuple(emb.shape)}")
-
-    return emb.to(DEVICE, dtype=TORCH_DTYPE)
+def piper_tts(text: str, out_wav: Path) -> None:
+    subprocess.run(["piper", "--model", str(PIPER_MODEL), "--config", str(PIPER_CFG), "--output_file", str(out_wav)],
+                   input=text.encode("utf-8"), check=True)
 
 
-@torch.inference_mode()
-def speecht5_voice_clone_tts(text: str, speaker_embedding: torch.Tensor, out_wav: Path):
-    processed = TTS_PROC(text=text, return_tensors="pt")
-
-    input_ids = processed["input_ids"].to(DEVICE)
-
-    speech = TTS_MODEL.generate_speech(
-        input_ids=input_ids,
-        speaker_embeddings=speaker_embedding,
-        vocoder=VOCODER
-    )
-
-    speech_np = speech.cpu().numpy()
-    sf.write(str(out_wav), speech_np, TARGET_SR)
+def xtts_synthesise(text: str, ref_wav_path: str, out_wav: Path) -> int:
+    chunks = split_text_for_xtts(text)
+    audio_parts = []
+    for chunk in chunks:
+        wav = XTTS_MODEL.tts(text=chunk, speaker_wav=ref_wav_path, language="en",
+                              temperature=XTTS_TEMPERATURE, repetition_penalty=XTTS_REPETITION_PENALTY,
+                              top_k=XTTS_TOP_K, top_p=XTTS_TOP_P, speed=XTTS_SPEED)
+        audio_parts.append(np.asarray(wav, dtype=np.float32))
+    if not audio_parts:
+        raise ValueError("XTTS produced no audio output.")
+    sf.write(str(out_wav), np.concatenate(audio_parts), XTTS_OUTPUT_SR)
+    return len(chunks)
 
 
-def initialise_models():
-    messages = []
-
-    try:
-        messages.append(load_translation_pipeline())
-    except Exception as e:
-        messages.append(f"Translation initialisation failed: {str(e)}")
-
-    try:
-        piper_error = validate_piper_assets()
-        if piper_error:
-            messages.append(f"Piper check failed: {piper_error}")
-        else:
-            messages.append("Piper standard TTS assets found.")
-    except Exception as e:
-        messages.append(f"Piper validation failed: {str(e)}")
-
-    try:
-        messages.append(load_voice_clone_models())
-    except Exception as e:
-        messages.append(f"Voice cloning initialisation failed: {str(e)}")
-
-    return "\n".join(messages)
-
-
+# =========================================================
+# Pipeline runners
+# =========================================================
 def run_standard_pipeline(audio_path: str, progress=gr.Progress()):
     if audio_path is None or not Path(audio_path).exists():
-        return (
-            "No audio provided.",
-            None,
-            "No timing information available.",
-            "Please upload or record a French speech file to continue."
-        )
-
+        return ("No audio provided.", None, "", "Please upload or record a French speech file.")
     if not TRANSLATION_READY:
         progress(0.08, desc="Loading translation model")
         load_translation_pipeline()
-
-    piper_error = validate_piper_assets()
-    if piper_error:
-        return (
-            "Standard TTS is not available.",
-            None,
-            "No timing information available.",
-            piper_error
-        )
-
+    err = validate_piper_assets()
+    if err:
+        return ("Piper TTS unavailable.", None, "", err)
     t0 = time.time()
-
-    progress(0.22, desc="Loading and preparing audio")
-    audio_16k, sr = load_audio_mono_16k(audio_path, MAX_AUDIO_SECONDS)
+    progress(0.22, desc="Preparing audio")
+    audio_16k, sr = load_audio_for_whisper(audio_path)
     t_load = time.time()
-
-    progress(0.52, desc="Translating French speech to English")
+    progress(0.50, desc="Translating French to English")
     en_text = translate_fr_to_en(audio_16k, sr)
-    t_st = time.time()
-
-    en_text_tts = normalise_text_for_tts(en_text)
-    if not en_text_tts:
-        return (
-            "Translation produced empty text.",
-            None,
-            "Audio was processed, but no valid translated text was produced.",
-            "Try a clearer or shorter audio sample."
-        )
-
-    progress(0.84, desc="Generating English speech output")
-    out_wav = OUT_DIR / f"tts_standard_{uuid.uuid4().hex}.wav"
-    piper_tts(en_text_tts, out_wav)
+    t_trans = time.time()
+    en_text_clean = normalise_text_for_tts(en_text)
+    if not en_text_clean:
+        return ("Translation produced empty text.", None, "", "Try a clearer audio sample.")
+    progress(0.84, desc="Generating English speech")
+    out_wav = OUT_DIR / f"standard_{uuid.uuid4().hex}.wav"
+    piper_tts(en_text_clean, out_wav)
     t_tts = time.time()
-
-    progress(1.0, desc="Completed")
-
-    timing_info = (
-        f"Audio loading: {t_load - t0:.2f}s\n"
-        f"Speech translation: {t_st - t_load:.2f}s\n"
-        f"Speech synthesis: {t_tts - t_st:.2f}s\n"
-        f"Total runtime: {t_tts - t0:.2f}s"
-    )
-
-    status = (
-        "Completed successfully. Standard French-to-English speech translation "
-        "and English speech generation finished."
-    )
-
-    return en_text, str(out_wav), timing_info, status
+    progress(1.0, desc="Done")
+    timing = (f"Audio preparation: {t_load - t0:.2f}s\nSpeech translation: {t_trans - t_load:.2f}s\n"
+              f"Speech synthesis: {t_tts - t_trans:.2f}s\nTotal: {t_tts - t0:.2f}s")
+    return (en_text, str(out_wav), timing, "Completed. Standard French-to-English translation done.")
 
 
 def run_voice_clone_pipeline(audio_path: str, progress=gr.Progress()):
     if audio_path is None or not Path(audio_path).exists():
-        return (
-            "No audio provided.",
-            None,
-            "No timing information available.",
-            "Please upload or record a French speech file to continue."
-        )
-
+        return ("No audio provided.", None, "", "Please upload or record a French speech file.")
     if not TRANSLATION_READY:
         progress(0.06, desc="Loading translation model")
         load_translation_pipeline()
-
-    # if not CLONE_READY:
-    #     progress(0.14, desc="Loading voice cloning models")
-    #     load_voice_clone_models()
-
-    if not CLONE_READY:
-        return (
-            "Voice cloning models not loaded.",
-            None,
-            "No timing available.",
-            "Please click 'Initialise system models' first and wait until it finishes."
-        )
-
+    if not XTTS_READY:
+        progress(0.12, desc="Loading XTTS model")
+        load_xtts_model()
     t0 = time.time()
-
-    progress(0.24, desc="Loading and preparing audio")
-    audio_16k, sr = load_audio_mono_16k(audio_path, MAX_AUDIO_SECONDS)
+    progress(0.20, desc="Preparing audio")
+    audio_16k, sr = load_audio_for_whisper(audio_path)
     t_load = time.time()
-
-    progress(0.48, desc="Translating French speech to English")
+    progress(0.42, desc="Translating French to English")
     en_text = translate_fr_to_en(audio_16k, sr)
-    t_st = time.time()
-
-    en_text_tts = normalise_text_for_tts(en_text)
-    if not en_text_tts:
-        return (
-            "Translation produced empty text.",
-            None,
-            "Audio was processed, but no valid translated text was produced.",
-            "Try a clearer or shorter audio sample."
-        )
-
-    progress(0.68, desc="Extracting speaker x-vector")
-    speaker_embedding = extract_xvector_embedding(audio_path)
-    t_spk = time.time()
-
-    progress(0.90, desc="Generating cloned English speech")
-    out_wav = OUT_DIR / f"tts_cloned_{uuid.uuid4().hex}.wav"
-    speecht5_voice_clone_tts(en_text_tts, speaker_embedding, out_wav)
+    t_trans = time.time()
+    en_text_clean = normalise_text_for_tts(en_text)
+    if not en_text_clean:
+        return ("Translation produced empty text.", None, "", "Try a clearer audio sample.")
+    progress(0.60, desc="Preparing reference audio")
+    ref_wav_path = prepare_xtts_reference(audio_path)
+    t_ref = time.time()
+    progress(0.78, desc="Cloning voice and generating English speech")
+    out_wav = OUT_DIR / f"cloned_{uuid.uuid4().hex}.wav"
+    num_chunks = xtts_synthesise(en_text_clean, ref_wav_path, out_wav)
     t_tts = time.time()
-
-    progress(1.0, desc="Completed")
-
-    timing_info = (
-        f"Audio loading: {t_load - t0:.2f}s\n"
-        f"Speech translation: {t_st - t_load:.2f}s\n"
-        f"Speaker embedding extraction: {t_spk - t_st:.2f}s\n"
-        f"Cloned speech synthesis: {t_tts - t_spk:.2f}s\n"
-        f"Total runtime: {t_tts - t0:.2f}s"
-    )
-
-    status = (
-        "Completed successfully. French speech was translated to English and "
-        "synthesised with voice cloning using SpeechT5, x-vector speaker conditioning, "
-        "and SpeechT5 HiFi-GAN."
-    )
-
-    return en_text, str(out_wav), timing_info, status
+    progress(1.0, desc="Done")
+    timing = (f"Audio preparation: {t_load - t0:.2f}s\nSpeech translation: {t_trans - t_load:.2f}s\n"
+              f"Reference audio prep: {t_ref - t_trans:.2f}s\nVoice cloning ({num_chunks} chunk(s)): {t_tts - t_ref:.2f}s\n"
+              f"Total: {t_tts - t0:.2f}s")
+    return (en_text, str(out_wav), timing, "Completed. French speech translated and synthesised with voice cloning.")
 
 
 def run_app(mode: str, audio_path: str, progress=gr.Progress()):
     if mode == "Translate without voice cloning":
         return run_standard_pipeline(audio_path, progress=progress)
-
     if mode == "Translate with voice cloning":
         return run_voice_clone_pipeline(audio_path, progress=progress)
-
-    return (
-        "Invalid mode selected.",
-        None,
-        "No timing information available.",
-        "Please choose a valid translation mode."
-    )
-
-
-# =========================================================
-# Content text you can edit easily
-# =========================================================
-HERO_TITLE = "Affordable translation."
-HERO_SUBTITLE = "Drop the communication barrier."
-
-ABOUT_TEXT = (
-    "SpeechBridge is a modular speech-to-speech translation system focused on "
-    "French-to-English spoken translation. It combines a fine-tuned Whisper-based "
-    "translation model with English speech generation, including a speaker-preserving "
-    "voice cloning pathway, inside a clean demonstration-ready interface."
-)
-
-PIPELINE_CARD_1 = (
-    "Record or upload French speech audio using the interface below. "
-    "Short clear clips are processed for end-to-end translation."
-)
-
-PIPELINE_CARD_2 = (
-    "Choose between standard translation or speaker-preserving voice cloning. "
-    "The standard pathway produces clear English output, while the cloning pathway "
-    "uses SpeechT5 with x-vector speaker conditioning."
-)
-
-PIPELINE_CARD_3 = (
-    "Receive translated English text and generated English speech output, together with "
-    "runtime information for transparent system evaluation."
-)
-
-FUTURE_WORK_TEXT = (
-    "Current scope is focused on French-to-English speech translation with an integrated "
-    "voice cloning pathway. Future development may include broader multilingual support, "
-    "faster inference, improved robustness on longer audio, and real-time streaming deployment."
-)
-
-FEEDBACK_1 = "Trial feedback from students or evaluators can be inserted here."
-FEEDBACK_2 = "Use this section to present usability impressions from your university testing."
-FEEDBACK_3 = "You can also summarise comments about translation quality, latency, and clarity here."
+    return ("Invalid mode.", None, "", "Please select a valid mode.")
 
 
 # =========================================================
 # CSS
 # =========================================================
 CUSTOM_CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Cormorant+Garamond:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500;600&display=swap');
 
-html {
-    scroll-behavior: smooth;
-}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { scroll-behavior: smooth; }
 
 body, .gradio-container {
-    background: #f3f3f1 !important;
-    font-family: 'Inter', sans-serif !important;
-    color: #111111 !important;
+    background: #f0ede6 !important;
+    font-family: 'DM Sans', sans-serif !important;
+    color: #1a1a18 !important;
 }
 
 .gradio-container {
@@ -1407,401 +1652,510 @@ body, .gradio-container {
     margin: 0 !important;
 }
 
-#main-wrap {
-    max-width: 1500px;
-    margin: 0 auto;
+/* ── NAV ── */
+#sb-nav {
+    position: sticky; top: 0; z-index: 100;
+    background: #1a1a18;
+    padding: 0 48px;
+    display: flex; align-items: center; justify-content: space-between;
+    height: 64px;
 }
 
-#top-nav {
-    position: sticky;
-    top: 0;
-    z-index: 1000;
-    background: #dedcc4;
-    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+.sb-logo {
+    font-family: 'DM Serif Display', serif;
+    font-size: 1.45rem;
+    color: #f0ede6;
+    letter-spacing: -0.01em;
 }
 
-.nav-inner {
-    max-width: 1400px;
-    margin: 0 auto;
-    padding: 18px 22px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 20px;
+.sb-logo span { color: #c8b89a; }
+
+.sb-nav-links { display: flex; gap: 36px; align-items: center; }
+.sb-nav-links a {
+    color: #a8a49c; text-decoration: none;
+    font-size: 0.875rem; font-weight: 400;
+    letter-spacing: 0.02em; transition: color 0.2s;
+}
+.sb-nav-links a:hover { color: #f0ede6; }
+
+.sb-nav-cta {
+    background: #c8b89a !important; color: #1a1a18 !important;
+    padding: 9px 22px; font-size: 0.875rem; font-weight: 600;
+    text-decoration: none; letter-spacing: 0.01em;
+    transition: background 0.2s;
+}
+.sb-nav-cta:hover { background: #b8a88a !important; }
+
+/* ── HERO ── */
+#sb-hero {
+    background: #1a1a18;
+    padding: 100px 48px 90px;
+    position: relative; overflow: hidden;
 }
 
-.brand-wrap {
-    display: flex;
-    align-items: center;
-    gap: 12px;
+.sb-hero-eyebrow {
+    font-size: 0.75rem; font-weight: 500; letter-spacing: 0.14em;
+    text-transform: uppercase; color: #c8b89a;
+    margin-bottom: 24px;
 }
 
-.brand-logo {
-    width: 34px;
-    height: 34px;
-    border-radius: 50%;
-    background:
-        radial-gradient(circle at center, #111 12%, transparent 13%),
-        repeating-radial-gradient(circle at center, #111 0 1.6px, transparent 1.6px 4px);
-    opacity: 0.95;
+.sb-hero-title {
+    font-family: 'DM Serif Display', serif;
+    font-size: clamp(3.2rem, 6vw, 5.5rem);
+    line-height: 1.05; color: #f0ede6;
+    max-width: 820px; margin-bottom: 24px;
 }
 
-.brand-text {
-    display: flex;
-    flex-direction: column;
-    line-height: 1;
-}
+.sb-hero-title em { color: #c8b89a; font-style: italic; }
 
-.brand-title {
-    font-family: 'Inter', sans-serif;
-    font-size: 1.9rem;
-    font-weight: 700;
-    letter-spacing: -0.03em;
-    color: #111;
-}
-
-.brand-sub {
-    font-size: 0.54rem;
-    letter-spacing: 0.22em;
-    text-transform: uppercase;
-    color: #555;
-    margin-top: 4px;
-}
-
-.nav-links {
-    display: flex;
-    align-items: center;
-    gap: 34px;
-    flex-wrap: wrap;
-    justify-content: center;
-}
-
-.nav-links a {
-    color: #111;
-    text-decoration: none;
-    font-size: 1rem;
-    font-weight: 500;
-}
-
-.nav-links a:hover {
-    opacity: 0.7;
-}
-
-.nav-btn {
-    background: #000;
-    color: #fff !important;
-    padding: 14px 28px;
-    text-decoration: none;
-    font-weight: 600;
-    display: inline-block;
-    min-width: 130px;
-    text-align: center;
-}
-
-.hero-section {
-    background: #f3f3f1;
-    padding: 88px 40px 70px 40px;
-    text-align: center;
-}
-
-.hero-title {
-    font-family: 'Cormorant Garamond', serif;
-    font-size: clamp(4rem, 7vw, 6.4rem);
-    line-height: 0.95;
-    font-weight: 500;
-    margin-bottom: 22px;
-    color: #111;
-}
-
-.hero-subtitle {
-    font-size: 1.7rem;
+.sb-hero-desc {
+    font-size: 1.05rem; line-height: 1.85;
+    color: #a8a49c; max-width: 580px; margin-bottom: 40px;
     font-weight: 300;
-    margin-bottom: 18px;
-    color: #333;
 }
 
-.hero-desc {
-    max-width: 850px;
-    margin: 0 auto 26px auto;
-    font-size: 1.02rem;
-    line-height: 1.8;
-    color: #4b4b4b;
+.sb-hero-actions { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+
+.sb-btn-primary {
+    background: #c8b89a; color: #1a1a18;
+    padding: 14px 32px; font-size: 0.95rem; font-weight: 600;
+    text-decoration: none; display: inline-block;
+    transition: background 0.2s, transform 0.15s;
+}
+.sb-btn-primary:hover { background: #b8a88a; transform: translateY(-1px); }
+
+.sb-btn-ghost {
+    background: transparent; color: #f0ede6;
+    padding: 14px 32px; font-size: 0.95rem; font-weight: 400;
+    text-decoration: none; display: inline-block;
+    border: 1px solid rgba(240,237,230,0.2);
+    transition: border-color 0.2s;
+}
+.sb-btn-ghost:hover { border-color: rgba(240,237,230,0.5); }
+
+.sb-stats-strip {
+    display: flex; gap: 48px; margin-top: 72px;
+    padding-top: 40px; border-top: 1px solid rgba(240,237,230,0.08);
+    flex-wrap: wrap;
+}
+.sb-stat-item {}
+.sb-stat-num {
+    font-family: 'DM Serif Display', serif;
+    font-size: 2rem; color: #f0ede6; line-height: 1;
+    margin-bottom: 6px;
+}
+.sb-stat-label {
+    font-size: 0.8rem; color: #6a665e;
+    letter-spacing: 0.06em; text-transform: uppercase;
 }
 
-.hero-cta {
-    display: inline-block;
-    background: #000;
-    color: #fff !important;
-    text-decoration: none;
-    padding: 15px 34px;
-    font-weight: 600;
-    margin-top: 6px;
+/* ── WAVEFORM ── */
+.sb-waveform {
+    position: absolute; bottom: 0; right: 0;
+    width: 420px; height: 180px; opacity: 0.12;
+    overflow: hidden;
 }
 
-.section-wrap {
-    padding: 82px 70px;
+/* ── HOW IT WORKS ── */
+#sb-how {
+    background: #f0ede6;
+    padding: 96px 48px;
 }
 
-.section-light {
-    background: #f3f3f1;
+.sb-section-label {
+    font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em;
+    text-transform: uppercase; color: #c8b89a;
+    margin-bottom: 16px;
 }
 
-.section-dark {
-    background: #000;
-    color: #fff;
+.sb-section-title {
+    font-family: 'DM Serif Display', serif;
+    font-size: clamp(2rem, 4vw, 3.2rem);
+    line-height: 1.1; color: #1a1a18;
+    margin-bottom: 56px; max-width: 600px;
 }
 
-.section-title {
-    font-family: 'Cormorant Garamond', serif;
-    font-size: clamp(3rem, 5vw, 5rem);
-    line-height: 1.02;
-    text-align: center;
-    margin-bottom: 28px;
-    font-weight: 500;
-}
-
-.section-subtext {
-    max-width: 940px;
-    margin: 0 auto 48px auto;
-    text-align: center;
-    line-height: 1.8;
-    font-size: 1rem;
-    color: #4f4f4f;
-}
-
-.section-dark .section-subtext {
-    color: #e9e9e9;
-}
-
-.card-grid {
+.sb-steps {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 26px;
-    margin-top: 20px;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 0;
+    position: relative;
 }
 
-.info-card {
-    background: transparent;
-    padding: 10px 4px;
+.sb-step {
+    padding: 32px 36px 32px 0;
+    border-top: 2px solid #1a1a18;
+    position: relative;
 }
 
-.info-card h3 {
-    font-family: 'Cormorant Garamond', serif;
-    font-size: 2rem;
-    margin-bottom: 14px;
-    font-weight: 600;
+.sb-step-num {
+    font-family: 'DM Serif Display', serif;
+    font-size: 0.85rem; color: #c8b89a;
+    margin-bottom: 16px; letter-spacing: 0.08em;
 }
 
-.info-card p {
-    font-size: 1rem;
-    line-height: 1.95;
-    color: #333;
+.sb-step-title {
+    font-size: 1.1rem; font-weight: 600; color: #1a1a18;
+    margin-bottom: 12px; line-height: 1.3;
 }
 
-.center-btn-wrap {
-    text-align: center;
-    margin-top: 34px;
+.sb-step-desc {
+    font-size: 0.9rem; line-height: 1.75; color: #5a5750;
+    font-weight: 300;
 }
 
-.center-btn {
-    display: inline-block;
-    background: #000;
-    color: #fff !important;
-    text-decoration: none;
-    padding: 16px 34px;
-    font-weight: 600;
-    min-width: 180px;
-    text-align: center;
+/* ── DEMO VIDEO ── */
+#sb-demo-video {
+    background: #1a1a18;
+    padding: 80px 48px;
 }
 
-.demo-shell {
-    max-width: 1320px;
-    margin: 36px auto 0 auto;
-    border: 1px solid rgba(0,0,0,0.08);
-    background: rgba(255,255,255,0.56);
-    backdrop-filter: blur(4px);
-    box-shadow: 0 10px 35px rgba(0,0,0,0.05);
+.sb-video-wrap {
+    max-width: 900px; margin: 0 auto;
 }
 
-.demo-top-bar {
-    background: #dedcc4;
-    padding: 14px 18px;
-    font-size: 0.95rem;
-    font-weight: 600;
-    border-bottom: 1px solid rgba(0,0,0,0.06);
-}
-
-.demo-note {
-    max-width: 900px;
-    margin: 0 auto 18px auto;
-    text-align: center;
-    font-size: 1rem;
-    line-height: 1.8;
-    color: #444;
-}
-
-.feedback-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 30px;
+.sb-video-container {
+    position: relative; padding-bottom: 56.25%;
+    background: #2a2a28; overflow: hidden;
     margin-top: 40px;
 }
 
-.feedback-card {
-    text-align: center;
-    padding: 10px 14px;
+.sb-video-container video {
+    position: absolute; top: 0; left: 0;
+    width: 100%; height: 100%; object-fit: cover;
 }
 
-.feedback-avatar {
-    width: 88px;
-    height: 88px;
-    border-radius: 50%;
-    background: linear-gradient(135deg, #b9bccf, #8287a7);
-    margin: 0 auto 18px auto;
+.sb-video-placeholder {
+    position: absolute; top: 0; left: 0;
+    width: 100%; height: 100%;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 16px;
 }
 
-.quote-mark {
-    font-size: 4rem;
-    line-height: 1;
-    color: #7280e4;
-    margin-bottom: 10px;
-    font-family: 'Cormorant Garamond', serif;
+.sb-play-icon {
+    width: 64px; height: 64px; border-radius: 50%;
+    background: rgba(200,184,154,0.15);
+    border: 1px solid rgba(200,184,154,0.3);
+    display: flex; align-items: center; justify-content: center;
 }
 
-.feedback-text {
-    font-size: 1rem;
-    line-height: 1.8;
-    color: #444;
-    font-style: italic;
-    min-height: 118px;
+.sb-video-placeholder p {
+    color: #6a665e; font-size: 0.9rem; letter-spacing: 0.04em;
 }
 
-.feedback-name {
-    margin-top: 16px;
-    font-weight: 700;
-    font-size: 1.08rem;
+/* ── AUDIO SAMPLES ── */
+#sb-samples {
+    background: #f0ede6;
+    padding: 80px 48px;
 }
 
-.footer {
-    background: #dedcc4;
-    padding: 44px 60px;
-}
-
-.footer-grid {
+.sb-samples-grid {
     display: grid;
-    grid-template-columns: 1.2fr 0.7fr 1fr 0.9fr;
-    gap: 34px;
-    align-items: start;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 16px; margin-top: 40px;
 }
 
-.footer-title {
-    font-weight: 700;
+.sb-sample-card {
+    background: #fff; border: 1px solid #e0ddd6;
+    padding: 20px 24px;
+    display: flex; flex-direction: column; gap: 12px;
+}
+
+.sb-sample-label {
+    font-size: 0.8rem; font-weight: 600; letter-spacing: 0.08em;
+    text-transform: uppercase; color: #c8b89a;
+}
+
+.sb-sample-name {
+    font-size: 1rem; font-weight: 500; color: #1a1a18;
+}
+
+.sb-sample-actions {
+    display: flex; gap: 10px; margin-top: 4px;
+}
+
+.sb-sample-btn {
+    font-size: 0.8rem; font-weight: 500; padding: 7px 16px;
+    cursor: pointer; border: none; transition: all 0.15s;
+    text-decoration: none; display: inline-block;
+}
+
+.sb-sample-play {
+    background: #1a1a18; color: #f0ede6;
+}
+.sb-sample-play:hover { background: #2a2a28; }
+
+.sb-sample-dl {
+    background: transparent; color: #1a1a18;
+    border: 1px solid #c8b89a;
+}
+.sb-sample-dl:hover { background: #c8b89a; }
+
+/* ── SYSTEM DEMO ── */
+#sb-system {
+    background: #f0ede6;
+    padding: 0 48px 96px;
+}
+
+.sb-system-shell {
+    border: 1px solid #d8d5ce;
+    background: #fff; overflow: hidden;
+}
+
+.sb-system-topbar {
+    background: #1a1a18;
+    padding: 14px 24px;
+    display: flex; align-items: center; gap: 10px;
+}
+
+.sb-topbar-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+}
+
+.sb-topbar-title {
+    font-size: 0.8rem; color: #6a665e;
+    margin-left: 8px; letter-spacing: 0.04em;
+}
+
+.sb-system-inner { padding: 32px; }
+
+/* Override ALL Gradio component colors inside system area */
+#sb-system .gradio-container,
+#sb-system .block,
+#sb-system .gr-box,
+#sb-system .wrap,
+#sb-system label,
+#sb-system .label-wrap span,
+#sb-system .svelte-1ed2p3z {
+    background: transparent !important;
+    color: #1a1a18 !important;
+    border-color: #d8d5ce !important;
+}
+
+#sb-system textarea,
+#sb-system input[type="text"],
+#sb-system .gr-textbox textarea {
+    background: #faf9f6 !important;
+    border: 1px solid #d8d5ce !important;
+    border-radius: 0 !important;
+    color: #1a1a18 !important;
+    font-family: 'DM Sans', sans-serif !important;
+}
+
+#sb-system .gr-button,
+#sb-system button {
+    background: #1a1a18 !important;
+    color: #f0ede6 !important;
+    border: none !important;
+    border-radius: 0 !important;
+    font-family: 'DM Sans', sans-serif !important;
+    font-weight: 500 !important;
+}
+
+#sb-system .gr-button:hover,
+#sb-system button:hover {
+    background: #2a2a28 !important;
+}
+
+#sb-system .gr-button.secondary,
+#sb-system button[variant="secondary"] {
+    background: transparent !important;
+    color: #1a1a18 !important;
+    border: 1px solid #c8b89a !important;
+}
+
+#sb-system .gr-button.secondary:hover {
+    background: #f0ede6 !important;
+}
+
+/* Radio buttons */
+#sb-system .gr-radio input[type="radio"]:checked + span,
+#sb-system input[type="radio"]:checked {
+    accent-color: #c8b89a !important;
+}
+
+/* Audio component */
+#sb-system .gr-audio,
+#sb-system audio {
+    background: #faf9f6 !important;
+    border: 1px solid #d8d5ce !important;
+    border-radius: 0 !important;
+}
+
+/* Status box */
+.sb-status-box {
+    background: #faf9f6 !important;
+    border: 1px solid #d8d5ce !important;
+    font-size: 0.85rem !important;
+    color: #5a5750 !important;
+}
+
+/* ── FEEDBACK SECTION ── */
+#sb-feedback {
+    background: #1a1a18;
+    padding: 80px 48px;
+}
+
+.sb-feedback-header {
+    display: flex; justify-content: space-between;
+    align-items: flex-end; margin-bottom: 48px;
+    flex-wrap: wrap; gap: 24px;
+}
+
+.sb-feedback-cta {
+    background: transparent; color: #c8b89a;
+    border: 1px solid rgba(200,184,154,0.4);
+    padding: 12px 28px; font-size: 0.875rem;
+    text-decoration: none; transition: all 0.2s;
+    white-space: nowrap;
+}
+.sb-feedback-cta:hover {
+    background: rgba(200,184,154,0.1);
+    border-color: #c8b89a;
+}
+
+.sb-feedback-carousel {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 24px;
+    min-height: 240px;
+}
+
+.sb-feedback-card {
+    background: rgba(240,237,230,0.04);
+    border: 1px solid rgba(240,237,230,0.08);
+    padding: 28px 28px 24px;
+    display: flex; flex-direction: column; gap: 16px;
+    transition: opacity 0.4s ease, transform 0.4s ease;
+}
+
+.sb-feedback-stars { display: flex; gap: 4px; }
+
+.sb-star {
+    width: 14px; height: 14px;
+    color: #c8b89a; font-size: 14px;
+}
+
+.sb-feedback-quote {
+    font-size: 0.95rem; line-height: 1.75;
+    color: #a8a49c; font-style: italic;
+    font-weight: 300; flex: 1;
+}
+
+.sb-feedback-name {
+    font-size: 0.8rem; font-weight: 600;
+    color: #6a665e; letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.sb-feedback-placeholder {
+    color: #4a4844; font-size: 0.85rem;
+    font-style: italic; display: flex;
+    align-items: center; justify-content: center;
+    height: 100%; text-align: center; padding: 24px;
+    border: 1px dashed rgba(240,237,230,0.12);
+}
+
+.sb-carousel-controls {
+    display: flex; justify-content: center;
+    gap: 8px; margin-top: 32px;
+}
+
+.sb-carousel-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: rgba(240,237,230,0.2);
+    cursor: pointer; transition: background 0.2s;
+    border: none;
+}
+.sb-carousel-dot.active { background: #c8b89a; }
+
+/* ── FOOTER ── */
+#sb-footer {
+    background: #111110;
+    padding: 56px 48px 40px;
+}
+
+.sb-footer-grid {
+    display: grid;
+    grid-template-columns: 1.5fr 1fr 1fr;
+    gap: 48px; padding-bottom: 40px;
+    border-bottom: 1px solid rgba(240,237,230,0.06);
+    margin-bottom: 32px;
+}
+
+.sb-footer-brand {
+    font-family: 'DM Serif Display', serif;
+    font-size: 1.3rem; color: #f0ede6;
     margin-bottom: 12px;
 }
+.sb-footer-brand span { color: #c8b89a; }
 
-.footer-links a,
-.footer-text {
-    display: block;
-    color: #111;
-    text-decoration: none;
-    line-height: 2;
+.sb-footer-tagline {
+    font-size: 0.85rem; color: #4a4844;
+    line-height: 1.7; max-width: 260px;
 }
 
-.footer-btn {
-    display: inline-block;
-    background: #000;
-    color: #fff !important;
-    text-decoration: none;
-    padding: 15px 30px;
-    font-weight: 600;
-    min-width: 170px;
-    text-align: center;
+.sb-footer-col-title {
+    font-size: 0.72rem; font-weight: 600;
+    letter-spacing: 0.14em; text-transform: uppercase;
+    color: #6a665e; margin-bottom: 16px;
 }
 
-.gradio-container .block,
-.gradio-container .gr-box,
-.gradio-container .gr-panel {
-    border-radius: 0 !important;
+.sb-footer-links { display: flex; flex-direction: column; gap: 10px; }
+.sb-footer-links a {
+    color: #4a4844; text-decoration: none;
+    font-size: 0.875rem; transition: color 0.2s;
+}
+.sb-footer-links a:hover { color: #c8b89a; }
+
+.sb-footer-bottom {
+    display: flex; justify-content: space-between;
+    align-items: center; flex-wrap: wrap; gap: 12px;
 }
 
-.gradio-container .gr-button-primary,
-.gradio-container .gr-button {
-    background: #000 !important;
-    border: 1px solid #000 !important;
-    color: #fff !important;
-    border-radius: 0 !important;
-    box-shadow: none !important;
+.sb-footer-copy {
+    font-size: 0.8rem; color: #3a3834;
 }
 
-.gradio-container .gr-button-secondary {
-    background: #f3f3f1 !important;
-    color: #111 !important;
-    border: 1px solid #111 !important;
-    border-radius: 0 !important;
-    box-shadow: none !important;
+/* ── RESPONSIVE ── */
+@media (max-width: 900px) {
+    #sb-nav { padding: 0 24px; }
+    #sb-hero, #sb-how, #sb-demo-video, #sb-samples,
+    #sb-system, #sb-feedback, #sb-footer { padding-left: 24px; padding-right: 24px; }
+    .sb-feedback-carousel { grid-template-columns: 1fr; }
+    .sb-footer-grid { grid-template-columns: 1fr; gap: 32px; }
+    .sb-nav-links { display: none; }
+    .sb-stats-strip { gap: 32px; }
 }
 
-.gradio-container textarea,
-.gradio-container input,
-.gradio-container .wrap,
-.gradio-container .gr-textbox,
-.gradio-container .gr-audio,
-.gradio-container .gr-radio,
-.gradio-container .gr-group {
-    border-radius: 0 !important;
+@media (max-width: 640px) {
+    .sb-steps { grid-template-columns: 1fr; }
+    .sb-samples-grid { grid-template-columns: 1fr; }
 }
 
-#demo-area .gr-group,
-#demo-area .gr-box,
-#demo-area .gr-form,
-#demo-area .gr-column {
-    background: transparent !important;
+/* Gradio overrides */
+.gradio-container .block { border-radius: 0 !important; }
+footer.svelte-1rjryqp { display: none !important; }
+/* Gradio overrides */
+.gradio-container .block { border-radius: 0 !important; }
+footer.svelte-1rjryqp { display: none !important; }
+
+/* Force all buttons to cream */
+button, .btn, [class*="button"] {
+    background: #c8b89a !important;
+    color: #1a1a18 !important;
     border: none !important;
-    box-shadow: none !important;
+    border-radius: 0 !important;
 }
-
-#demo-area label,
-#demo-area .gradio-container label {
-    font-weight: 700 !important;
-    color: #111 !important;
+button:hover { background: #b8a88a !important; }
+button[variant="secondary"], button.secondary {
+    background: transparent !important;
+    color: #1a1a18 !important;
+    border: 1px solid #c8b89a !important;
 }
-
-#demo-area .gr-textbox,
-#demo-area .gr-audio,
-#demo-area .gr-radio {
-    background: rgba(255,255,255,0.82) !important;
-    border: 1px solid rgba(0,0,0,0.12) !important;
-    padding: 8px !important;
-}
-
-.small-muted {
-    color: #666;
-    font-size: 0.95rem;
-    line-height: 1.7;
-}
-
-@media (max-width: 1000px) {
-    .card-grid,
-    .feedback-grid,
-    .footer-grid {
-        grid-template-columns: 1fr;
-    }
-
-    .nav-inner {
-        flex-direction: column;
-        align-items: stretch;
-    }
-
-    .nav-links {
-        gap: 18px;
-    }
-
-    .hero-section,
-    .section-wrap,
-    .footer {
-        padding-left: 24px;
-        padding-right: 24px;
-    }
+input[type="radio"], input[type="checkbox"] {
+    accent-color: #c8b89a !important;
 }
 """
 
@@ -1809,103 +2163,271 @@ body, .gradio-container {
 # =========================================================
 # UI
 # =========================================================
-with gr.Blocks(css=CUSTOM_CSS, title="SpeechBridge") as demo:
+# sb_theme = gr.themes.Base(
+#     primary_hue=gr.themes.colors.orange,
+#     secondary_hue=gr.themes.colors.gray,
+#     neutral_hue=gr.themes.colors.gray,
+#     font=[gr.themes.GoogleFont("DM Sans"), "sans-serif"],
+# ).set(
+#     button_primary_background_fill="#c8b89a",
+#     button_primary_background_fill_hover="#b8a88a",
+#     button_primary_text_color="#1a1a18",
+#     button_primary_border_color="#c8b89a",
+#     button_secondary_background_fill="transparent",
+#     button_secondary_background_fill_hover="#f0ede6",
+#     button_secondary_text_color="#1a1a18",
+#     button_secondary_border_color="#c8b89a",
+#     block_background_fill="#ffffff",
+#     block_border_color="#d8d5ce",
+#     block_label_text_color="#1a1a18",
+#     block_label_background_fill="transparent",
+#     input_background_fill="#faf9f6",
+#     input_border_color="#d8d5ce",
+#     body_background_fill="#f0ede6",
+#     body_text_color="#1a1a18",
+#     checkbox_background_color_selected="#c8b89a",
+#     checkbox_border_color_selected="#c8b89a",
+#     checkbox_label_background_fill_selected="#c8b89a",
+#     checkbox_label_text_color_selected="#1a1a18",
+#     radio_circle="#c8b89a",
+# )
+
+# sb_theme = gr.themes.Base(
+#     font=[gr.themes.GoogleFont("DM Sans"), "sans-serif"],
+# )
+
+# with gr.Blocks(css=CUSTOM_CSS, theme=sb_theme, title="SpeechBridge") as demo:
+with gr.Blocks(title="SpeechBridge") as demo:
+    # ── NAV ──
     gr.HTML("""
-    <div id="main-wrap">
-        <div id="top-nav">
-            <div class="nav-inner">
-                <div class="brand-wrap">
-                    <div class="brand-logo"></div>
-                    <div class="brand-text">
-                        <div class="brand-title">SpeechBridge</div>
-                        <div class="brand-sub">French to English translation</div>
-                    </div>
-                </div>
+    <nav id="sb-nav">
+        <div class="sb-logo">Speech<span>Bridge</span></div>
+        <div class="sb-nav-links">
+            <a href="#sb-how">How it works</a>
+            <a href="#sb-samples">Try a sample</a>
+            <a href="#sb-system">Demo</a>
+            <a href="#sb-feedback">Feedback</a>
+        </div>
+        <a class="sb-nav-cta" href="#sb-system">Try it yourself</a>
+    </nav>
+    """)
 
-                <div class="nav-links">
-                    <a href="#home">Home</a>
-                    <a href="#about">About</a>
-                    <a href="#pipeline">Our Offering</a>
-                    <a href="#contact">Contact</a>
-                </div>
-
-                <a class="nav-btn" href="#contact">Contact Us</a>
+    # ── HERO ──
+    gr.HTML("""
+    <section id="sb-hero">
+        <div class="sb-hero-eyebrow">French → English · Speech Translation</div>
+        <h1 class="sb-hero-title">
+            Speak French.<br><em>Be heard</em> in English.
+        </h1>
+        <p class="sb-hero-desc">
+            SpeechBridge translates spoken French into English — preserving not just
+            the words, but the voice, tone, and character of the original speaker.
+        </p>
+        <div class="sb-hero-actions">
+            <a class="sb-btn-primary" href="#sb-system">Try it yourself</a>
+            <a class="sb-btn-ghost" href="#sb-how">See how it works</a>
+        </div>
+        <div class="sb-stats-strip">
+            <div class="sb-stat-item">
+                <div class="sb-stat-num">2</div>
+                <div class="sb-stat-label">Languages</div>
+            </div>
+            <div class="sb-stat-item">
+                <div class="sb-stat-num">~0.81</div>
+                <div class="sb-stat-label">Voice similarity</div>
+            </div>
+            <div class="sb-stat-item">
+                <div class="sb-stat-num">2</div>
+                <div class="sb-stat-label">Output modes</div>
+            </div>
+            <div class="sb-stat-item">
+                <div class="sb-stat-num">End-to-end</div>
+                <div class="sb-stat-label">Pipeline</div>
             </div>
         </div>
+        <div class="sb-waveform">
+            <svg viewBox="0 0 420 180" xmlns="http://www.w3.org/2000/svg" width="420" height="180">
+                <polyline points="0,90 20,60 40,110 60,40 80,120 100,55 120,100 140,30 160,130 180,50 200,95 220,25 240,140 260,45 280,105 300,35 320,125 340,60 360,100 380,50 400,80 420,90" fill="none" stroke="#c8b89a" stroke-width="1.5" opacity="0.6"/>
+                <polyline points="0,90 15,75 30,100 50,55 70,115 90,70 110,95 130,45 150,120 170,65 190,90 210,40 230,130 250,55 270,100 290,50 310,115 330,70 350,90 370,60 390,85 420,90" fill="none" stroke="#c8b89a" stroke-width="0.8" opacity="0.3"/>
+            </svg>
+        </div>
+    </section>
     """)
 
-    gr.HTML(f"""
-        <section id="home" class="hero-section">
-            <div class="hero-title">{HERO_TITLE}</div>
-            <div class="hero-subtitle">{HERO_SUBTITLE}</div>
-            <div class="hero-desc">{ABOUT_TEXT}</div>
-            <a class="hero-cta" href="#pipeline">Explore the System</a>
-        </section>
-    """)
-
-    gr.HTML(f"""
-        <section id="about" class="section-wrap section-light">
-            <div class="section-title">More about the pipeline</div>
-            <div class="section-subtext">
-                SpeechBridge currently demonstrates a modular French-to-English spoken translation workflow.
-                Users can record or upload audio, select a translation mode, and receive translated English
-                text and speech output through a clean evaluation interface.
-            </div>
-
-            <div class="card-grid">
-                <div class="info-card">
-                    <h3>Speech input</h3>
-                    <p>{PIPELINE_CARD_1}</p>
-                </div>
-
-                <div class="info-card">
-                    <h3>Translation mode</h3>
-                    <p>{PIPELINE_CARD_2}</p>
-                </div>
-
-                <div class="info-card">
-                    <h3>Generated output</h3>
-                    <p>{PIPELINE_CARD_3}</p>
-                </div>
-            </div>
-
-            <div class="center-btn-wrap">
-                <a class="center-btn" href="#pipeline">Our offering</a>
-            </div>
-        </section>
-    """)
-
+    # ── HOW IT WORKS ──
     gr.HTML("""
-        <section id="pipeline" class="section-wrap section-light">
-            <div class="section-title">Try SpeechBridge</div>
-            <div class="demo-note">
-                Record or upload a short French speech sample, then choose between
-                standard translation or the full voice cloning pathway.
+    <section id="sb-how">
+        <div class="sb-section-label">How it works</div>
+        <h2 class="sb-section-title">From spoken French to English speech in three steps</h2>
+        <div class="sb-steps">
+            <div class="sb-step">
+                <div class="sb-step-num">01</div>
+                <div class="sb-step-title">Upload your audio</div>
+                <div class="sb-step-desc">
+                    Record or upload a French speech clip. Any format works —
+                    the system handles conversion automatically.
+                </div>
             </div>
+            <div class="sb-step">
+                <div class="sb-step-num">02</div>
+                <div class="sb-step-title">Choose your output mode</div>
+                <div class="sb-step-desc">
+                    Select standard translation for clean English speech,
+                    or voice cloning to preserve the original speaker's voice.
+                </div>
+            </div>
+            <div class="sb-step">
+                <div class="sb-step-num">03</div>
+                <div class="sb-step-title">Receive translated speech</div>
+                <div class="sb-step-desc">
+                    Get the translated English text and a synthesised audio
+                    output — with voice cloning, it sounds like the same person.
+                </div>
+            </div>
+        </div>
+    </section>
+    """)
 
-            <div class="demo-shell">
-                <div class="demo-top-bar">SpeechBridge demonstration interface</div>
-                <div id="demo-area" style="padding: 28px 26px 22px 26px;">
+    # ── DEMO VIDEO ──
+    gr.HTML("""
+    <section id="sb-demo-video">
+        <div class="sb-video-wrap">
+            <div class="sb-section-label" style="color:#c8b89a;">See it in action</div>
+            <h2 class="sb-section-title" style="color:#f0ede6; margin-bottom:0;">
+                Watch a full translation run
+            </h2>
+            <div class="sb-video-container">
+                <video id="sb-video" controls style="display:none;">
+                    <source src="demo.mp4" type="video/mp4">
+                </video>
+                <div class="sb-video-placeholder" id="sb-video-placeholder">
+                    <div class="sb-play-icon">
+                        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                            <path d="M7 4l10 6-10 6V4z" fill="#c8b89a"/>
+                        </svg>
+                    </div>
+                    <p>Demo video coming soon</p>
+                </div>
+            </div>
+        </div>
+        <script>
+        (function() {
+            var vid = document.getElementById('sb-video');
+            var placeholder = document.getElementById('sb-video-placeholder');
+            if (vid) {
+                vid.addEventListener('canplay', function() {
+                    placeholder.style.display = 'none';
+                    vid.style.display = 'block';
+                });
+                vid.addEventListener('error', function() {
+                    placeholder.style.display = 'flex';
+                    vid.style.display = 'none';
+                });
+            }
+        })();
+        </script>
+    </section>
+    """)
+
+    # ── AUDIO SAMPLES ──
+    gr.HTML("""
+    <section id="sb-samples">
+        <div class="sb-section-label">Sample audio</div>
+        <h2 class="sb-section-title">Try it with one of our clips</h2>
+        <p style="color:#5a5750; font-size:0.95rem; line-height:1.7; max-width:560px; margin-bottom:0; font-weight:300;">
+            Download any of the French speech samples below and upload them into the system to see it in action.
+        </p>
+        <div class="sb-samples-grid">
+            <div class="sb-sample-card">
+                <div class="sb-sample-label">Sample 01</div>
+                <div class="sb-sample-name">Child's voice</div>
+                <div class="sb-sample-actions">
+                    <a class="sb-sample-btn sb-sample-dl" href="audio_samples/sample_1.wav" download>Download</a>
+                </div>
+            </div>
+            <div class="sb-sample-card">
+                <div class="sb-sample-label">Sample 02</div>
+                <div class="sb-sample-name">Adult female voice</div>
+                <div class="sb-sample-actions">
+                    <a class="sb-sample-btn sb-sample-dl" href="audio_samples/sample_2.wav" download>Download</a>
+                </div>
+            </div>
+            <div class="sb-sample-card">
+                <div class="sb-sample-label">Sample 03</div>
+                <div class="sb-sample-name">Adult male voice</div>
+                <div class="sb-sample-actions">
+                    <a class="sb-sample-btn sb-sample-dl" href="audio_samples/sample_3.wav" download>Download</a>
+                </div>
+            </div>
+            <div class="sb-sample-card">
+                <div class="sb-sample-label">Sample 04</div>
+                <div class="sb-sample-name">Young female voice</div>
+                <div class="sb-sample-actions">
+                    <a class="sb-sample-btn sb-sample-dl" href="audio_samples/sample_4.wav" download>Download</a>
+                </div>
+            </div>
+            <div class="sb-sample-card">
+                <div class="sb-sample-label">Sample 05</div>
+                <div class="sb-sample-name">Elderly voice</div>
+                <div class="sb-sample-actions">
+                    <a class="sb-sample-btn sb-sample-dl" href="audio_samples/sample_5.wav" download>Download</a>
+                </div>
+            </div>
+        </div>
+    </section>
+    """)
+
+    # ── SYSTEM DEMO ──
+    gr.HTML("""
+    <section id="sb-system">
+        <div class="sb-section-label">Live demo</div>
+        <h2 class="sb-section-title">Try SpeechBridge</h2>
+        <div class="sb-system-shell">
+            <div class="sb-system-topbar">
+                <div class="sb-topbar-dot" style="background:#e85d5d;"></div>
+                <div class="sb-topbar-dot" style="background:#e8b85d;"></div>
+                <div class="sb-topbar-dot" style="background:#5de87a;"></div>
+                <span class="sb-topbar-title">speechbridge — live translation interface</span>
+            </div>
+            <div class="sb-system-inner">
     """)
 
     with gr.Row():
         with gr.Column(scale=1):
             model_status = gr.Textbox(
                 label="System status",
-                value=(
-                    "App ready. Models are lazy-loaded so the interface opens faster. "
-                    "Voice cloning mode uses SpeechT5 + x-vector speaker conditioning."
-                ),
-                interactive=False,
-                lines=5
+                value="Models are initialising in the background. Ready shortly.",
+                interactive=False, lines=3,
+                elem_classes=["sb-status-box"]
             )
-            init_btn = gr.Button("Initialise system models", variant="secondary")
+            init_btn = gr.Button("Initialise models manually", variant="secondary")
+
+            gr.HTML("""
+            <div style="margin: 20px 0 8px; font-size:0.8rem; font-weight:600;
+                        letter-spacing:0.08em; text-transform:uppercase; color:#1a1a18;">
+                Input language
+            </div>
+            """)
+
+            input_lang = gr.Dropdown(
+                choices=["French", "More languages coming soon…"],
+                value="French", label="", interactive=False
+            )
+
+            gr.HTML("""
+            <div style="margin: 16px 0 8px; font-size:0.8rem; font-weight:600;
+                        letter-spacing:0.08em; text-transform:uppercase; color:#1a1a18;">
+                Output language
+            </div>
+            """)
+
+            output_lang = gr.Dropdown(
+                choices=["English", "More languages coming soon…"],
+                value="English", label="", interactive=False
+            )
 
             mode = gr.Radio(
-                choices=[
-                    "Translate without voice cloning",
-                    "Translate with voice cloning"
-                ],
+                choices=["Translate without voice cloning", "Translate with voice cloning"],
                 value="Translate without voice cloning",
                 label="Translation mode"
             )
@@ -1913,11 +2435,15 @@ with gr.Blocks(css=CUSTOM_CSS, title="SpeechBridge") as demo:
             audio_input = gr.Audio(
                 sources=["upload", "microphone"],
                 type="filepath",
-                label="Record or upload French speech audio"
+                label="Upload or record French speech",
+                format="wav",
             )
 
             gr.Markdown(
-                "<div class='small-muted'>Recommended input, short and clear speech under 20 seconds for smoother CPU performance during demonstration.</div>"
+                "<div style='font-size:0.8rem;color:#8a8780;line-height:1.6;margin-top:6px;'>"
+                "Upload any audio format or record directly. For voice cloning, the same "
+                "clip is used as the speaker reference — clear speech gives the best results."
+                "</div>"
             )
 
             translate_btn = gr.Button("Run translation", variant="primary")
@@ -1925,115 +2451,178 @@ with gr.Blocks(css=CUSTOM_CSS, title="SpeechBridge") as demo:
         with gr.Column(scale=1):
             translated_text = gr.Textbox(
                 label="English translation",
-                lines=8,
+                lines=6,
                 placeholder="Translated English text will appear here."
             )
+            output_audio = gr.Audio(type="filepath", label="Generated English speech")
+            runtime_info = gr.Textbox(label="Runtime breakdown", lines=6, interactive=False)
+            pipeline_status = gr.Textbox(label="Status", lines=3, interactive=False)
 
-            output_audio = gr.Audio(
-                type="filepath",
-                label="Generated English speech"
-            )
+    gr.HTML("</div></div></section>")
 
-            runtime_info = gr.Textbox(
-                label="Runtime information",
-                lines=6,
-                interactive=False
-            )
-
-            pipeline_status = gr.Textbox(
-                label="Processing feedback",
-                lines=4,
-                interactive=False
-            )
-
-    gr.HTML("""
-                </div>
-            </div>
-        </section>
-    """)
-
+    # ── FEEDBACK ──
+    # ── FEEDBACK ──
     gr.HTML(f"""
-        <section class="section-wrap section-dark">
-            <div class="section-title">Future development</div>
-            <div class="section-subtext">{FUTURE_WORK_TEXT}</div>
-        </section>
-    """)
-
-    gr.HTML("""
-        <section class="section-wrap section-light">
-            <div class="section-title">The spoken word when it matters.</div>
-    """)
-
-    gr.HTML(f"""
-            <div class="feedback-grid">
-                <div class="feedback-card">
-                    <div class="feedback-avatar"></div>
-                    <div class="quote-mark">”</div>
-                    <div class="feedback-text">{FEEDBACK_1}</div>
-                    <div class="feedback-name">Trial Feedback 1</div>
+        <section id="sb-feedback">
+            <div class="sb-feedback-header">
+                <div>
+                    <div class="sb-section-label" style="color:#c8b89a;">User feedback</div>
+                    <h2 class="sb-section-title" style="color:#f0ede6; margin-bottom:0;">
+                        What people are saying
+                    </h2>
                 </div>
-
-                <div class="feedback-card">
-                    <div class="feedback-avatar" style="background: linear-gradient(135deg, #9da1b7, #53576f);"></div>
-                    <div class="quote-mark">”</div>
-                    <div class="feedback-text">{FEEDBACK_2}</div>
-                    <div class="feedback-name">Trial Feedback 2</div>
-                </div>
-
-                <div class="feedback-card">
-                    <div class="feedback-avatar" style="background: linear-gradient(135deg, #b9a5a0, #6b5e5a);"></div>
-                    <div class="quote-mark">”</div>
-                    <div class="feedback-text">{FEEDBACK_3}</div>
-                    <div class="feedback-name">Trial Feedback 3</div>
+                <a class="sb-feedback-cta" href="{GOOGLE_FORM_URL}" target="_blank">
+                    Share your feedback →
+                </a>
+            </div>
+            <div class="sb-feedback-carousel" id="sb-feedback-carousel">
+                <div class="sb-feedback-placeholder">
+                    <span>Feedback will appear here once responses are submitted.</span>
                 </div>
             </div>
+            <div class="sb-carousel-controls" id="sb-carousel-controls" style="display:none;"></div>
         </section>
-    """)
+        """)
 
-    gr.HTML("""
-        <footer id="contact" class="footer">
-            <div class="footer-grid">
-                <div>
-                    <div class="brand-wrap" style="align-items:flex-start;">
-                        <div class="brand-logo" style="width:28px;height:28px;margin-top:2px;"></div>
-                        <div class="brand-text">
-                            <div class="brand-title" style="font-size:1.35rem;">SpeechBridge</div>
-                            <div class="brand-sub">French to English translation</div>
-                        </div>
-                    </div>
-                </div>
+    demo.load(
+        fn=None,
+        js=f"""
+            function() {{
+                var SHEET_URL = 'https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:json';
+                var PER_PAGE = 3;
+                var allFeedback = [];
+                var currentPage = 0;
+                var autoTimer = null;
 
-                <div>
-                    <div class="footer-title">Home</div>
-                    <div class="footer-links">
-                        <a href="#home">Home</a>
-                        <a href="#about">About</a>
-                        <a href="#pipeline">Our Offering</a>
-                        <a href="#contact">Contact</a>
-                    </div>
-                </div>
+                function renderStars(n) {{
+                    var s = '';
+                    var filled = Math.round(n || 0);
+                    for (var i = 1; i <= 5; i++) {{
+                        s += '<span style="color:#c8b89a;font-size:14px;">' + (i <= filled ? '★' : '☆') + '</span>';
+                    }}
+                    return s;
+                }}
 
-                <div>
-                    <div class="footer-title">Project details</div>
-                    <div class="footer-text">French to English speech translation demo</div>
-                    <div class="footer-text">Whisper-medium + LoRA + SpeechT5 cloning</div>
-                    <div class="footer-text">SpeechBrain x-vector speaker conditioning</div>
-                    <div class="footer-text">University final year project</div>
-                </div>
+                function renderPage(page) {{
+                    var carousel = document.getElementById('sb-feedback-carousel');
+                    var controls = document.getElementById('sb-carousel-controls');
+                    if (!carousel) return;
+                    var start = page * PER_PAGE;
+                    var slice = allFeedback.slice(start, start + PER_PAGE);
+                    carousel.innerHTML = '';
+                    slice.forEach(function(fb) {{
+                        var avg = ((fb.r1 || 0) + (fb.r3 || 0)) / 2;
+                        var card = document.createElement('div');
+                        card.className = 'sb-feedback-card';
+                        card.innerHTML =
+                            '<div style="display:flex;gap:4px;margin-bottom:12px;">' + renderStars(avg) + '</div>' +
+                            '<div style="font-size:0.95rem;line-height:1.75;color:#a8a49c;font-style:italic;font-weight:300;flex:1;">' + (fb.comment || 'No comment provided.') + '</div>' +
+                            '<div style="font-size:0.8rem;font-weight:600;color:#6a665e;letter-spacing:0.06em;text-transform:uppercase;margin-top:16px;">' + (fb.name || 'Anonymous') + '</div>';
+                        carousel.appendChild(card);
+                    }});
+                    if (controls) {{
+                        var dots = controls.querySelectorAll('.sb-carousel-dot');
+                        dots.forEach(function(d, i) {{ d.classList.toggle('active', i === page); }});
+                    }}
+                    currentPage = page;
+                }}
 
-                <div>
-                    <a class="footer-btn" href="#contact">Contact Us</a>
-                </div>
-            </div>
-        </footer>
-    </div>
-    """)
+                function buildControls(totalPages) {{
+                    var controls = document.getElementById('sb-carousel-controls');
+                    if (!controls) return;
+                    controls.innerHTML = '';
+                    if (totalPages <= 1) return;
+                    controls.style.display = 'flex';
+                    for (var i = 0; i < totalPages; i++) {{
+                        (function(idx) {{
+                            var dot = document.createElement('button');
+                            dot.className = 'sb-carousel-dot' + (idx === 0 ? ' active' : '');
+                            dot.addEventListener('click', function() {{
+                                clearInterval(autoTimer);
+                                renderPage(idx);
+                            }});
+                            controls.appendChild(dot);
+                        }})(i);
+                    }}
+                }}
 
-    init_btn.click(
-        fn=initialise_models,
-        outputs=model_status
+                function loadFeedback() {{
+                    fetch(SHEET_URL)
+                        .then(function(r) {{ return r.text(); }})
+                        .then(function(text) {{
+                            var start = text.indexOf('(') + 1;
+                            var end = text.lastIndexOf(')');
+                            var json = JSON.parse(text.substring(start, end));
+                            var rows = json.table && json.table.rows ? json.table.rows : [];
+                            allFeedback = rows.map(function(row) {{
+                                var c = row.c || [];
+                                var nameVal = c[5] && c[5].v ? String(c[5].v).trim() : 'Anonymous';
+                                return {{
+                                    r1: c[1] && c[1].v ? Number(c[1].v) : 0,
+                                    r2: c[2] && c[2].v ? Number(c[2].v) : 0,
+                                    r3: c[3] && c[3].v ? Number(c[3].v) : 0,
+                                    comment: c[4] && c[4].v ? String(c[4].v) : '',
+                                    name: nameVal.toLowerCase() === 'anonymous' ? 'Anonymous' : nameVal
+                                }};
+                            }}).filter(function(fb) {{ return fb.comment || fb.r1; }});
+
+                            if (allFeedback.length === 0) return;
+                            var totalPages = Math.ceil(allFeedback.length / PER_PAGE);
+                            buildControls(totalPages);
+                            renderPage(0);
+                            if (totalPages > 1) {{
+                                autoTimer = setInterval(function() {{
+                                    renderPage((currentPage + 1) % totalPages);
+                                }}, 5000);
+                            }}
+                        }})
+                        .catch(function(e) {{ console.log('Feedback error:', e); }});
+                }}
+
+                setTimeout(loadFeedback, 1500);
+            }}
+            """
     )
 
+    # ── FOOTER ──
+    gr.HTML("""
+        <footer id="sb-footer">
+            <div class="sb-footer-grid">
+                <div>
+                    <div class="sb-footer-brand">Speech<span>Bridge</span></div>
+                    <p class="sb-footer-tagline">
+                        A speech-to-speech translation system combining neural translation
+                        with speaker-preserving voice cloning.
+                    </p>
+                </div>
+                <div>
+                    <div class="sb-footer-col-title">Navigation</div>
+                    <div class="sb-footer-links">
+                        <a href="#sb-how">How it works</a>
+                        <a href="#sb-samples">Audio samples</a>
+                        <a href="#sb-system">Live demo</a>
+                        <a href="#sb-feedback">Feedback</a>
+                    </div>
+                </div>
+                <div>
+                    <div class="sb-footer-col-title">Contact</div>
+                    <div class="sb-footer-links">
+                        <a href="#sb-feedback">Leave feedback</a>
+                    </div>
+                </div>
+            </div>
+            <div class="sb-footer-bottom">
+                <span class="sb-footer-copy">SpeechBridge — University Final Year Project</span>
+                <span class="sb-footer-copy">French → English Speech Translation</span>
+            </div>
+        </footer>
+        """)
+    
+
+
+
+    # ── EVENTS ──
+    init_btn.click(fn=initialise_models, outputs=model_status)
     translate_btn.click(
         fn=run_app,
         inputs=[mode, audio_input],
@@ -2042,4 +2631,7 @@ with gr.Blocks(css=CUSTOM_CSS, title="SpeechBridge") as demo:
 
 
 if __name__ == "__main__":
-    demo.launch()
+    init_thread = threading.Thread(target=background_init, daemon=True)
+    init_thread.start()
+    # demo.launch()
+    demo.launch(css=CUSTOM_CSS)
