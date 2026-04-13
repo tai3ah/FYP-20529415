@@ -1435,7 +1435,13 @@ def prepare_xtts_reference(audio_path: str) -> str:
     sf.write(out_path, audio, XTTS_SR)
     return out_path
 
-
+def persist_audio_file(audio_path: str) -> Optional[str]:
+    if audio_path is None or not Path(audio_path).exists():
+        return None
+    src = Path(audio_path)
+    dst = TEMP_DIR / f"ui_audio_{uuid.uuid4().hex}{src.suffix or '.wav'}"
+    dst.write_bytes(src.read_bytes())
+    return str(dst)
 # =========================================================
 # Text utilities
 # =========================================================
@@ -1645,191 +1651,155 @@ def run_app(mode: str, audio_path: str, progress=gr.Progress()):
 # CSS
 # =========================================================
 CUSTOM_CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@100..900&display=swap" rel="stylesheet"&family=Inter:wght@300;400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Inter:wght@300;400;500;600&display=swap');
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html { scroll-behavior: smooth; }
 
 body, .gradio-container {
-    background: #0a0a0f !important;
+    background: #09090f !important;
     font-family: 'Inter', sans-serif !important;
     color: #e2e8f0 !important;
 }
+.gradio-container { max-width: 100% !important; padding: 0 !important; margin: 0 !important; }
 
-.gradio-container {
-    max-width: 100% !important;
-    padding: 0 !important;
-    margin: 0 !important;
-}
-
+/* NAV */
 #sb-nav {
     position: sticky; top: 0; z-index: 100;
-    background: rgba(10,10,15,0.85);
+    background: rgba(9,9,15,0.85);
     backdrop-filter: blur(20px);
-    border-bottom: 1px solid rgba(124,58,237,0.15);
+    border-bottom: 1px solid rgba(249,115,22,0.15);
     padding: 0 48px;
     display: flex; align-items: center; justify-content: space-between;
     height: 68px;
 }
-
 .sb-logo {
     font-family: "Outfit", sans-serif;
-    font-weight: 900;
-    font-size: 1.5rem; font-weight: 800;
-    color: #fff; letter-spacing: -0.02em;
+    font-weight: 800; font-size: 1.45rem; color: #fff;
+    letter-spacing: -0.02em;
     display: flex; align-items: center; gap: 10px;
 }
-
 .sb-logo-dot {
     width: 10px; height: 10px; border-radius: 50%;
-    background: linear-gradient(135deg, #a855f7, #7c3aed);
-    box-shadow: 0 0 12px #a855f7;
+    background: linear-gradient(135deg, #f97316, #f43f5e);
     flex-shrink: 0;
 }
-
 .sb-nav-links { display: flex; gap: 36px; align-items: center; }
 .sb-nav-links a { color: #94a3b8; text-decoration: none; font-size: 0.9rem; transition: color 0.2s; }
 .sb-nav-links a:hover { color: #e2e8f0; }
-
 .sb-nav-cta {
-    background: linear-gradient(135deg, #7c3aed, #a855f7);
+    background: linear-gradient(135deg, #ea580c, #f97316);
     color: #fff !important; padding: 10px 24px;
     font-size: 0.875rem; font-weight: 600;
     text-decoration: none; border-radius: 6px;
-    box-shadow: 0 0 20px rgba(168,85,247,0.3);
-    transition: opacity 0.2s, box-shadow 0.2s;
+    transition: opacity 0.2s;
 }
-.sb-nav-cta:hover { opacity: 0.9; box-shadow: 0 0 30px rgba(168,85,247,0.5); }
+.sb-nav-cta:hover { opacity: 0.88; }
 
+/* HERO */
 #sb-hero {
-    background: #0a0a0f;
+    background: #09090f;
     padding: 100px 48px 80px;
     text-align: center;
     position: relative; overflow: hidden;
-    min-height: 92vh;
+    min-height: 90vh;
     display: flex; align-items: center; justify-content: center;
 }
-
 .sb-hero-inner { position: relative; z-index: 2; max-width: 900px; margin: 0 auto; }
 
 .sb-hero-badge {
     display: inline-flex; align-items: center; gap: 8px;
-    background: rgba(168,85,247,0.1);
-    border: 1px solid rgba(168,85,247,0.3);
+    background: rgba(249,115,22,0.08);
+    border: 1px solid rgba(249,115,22,0.25);
     padding: 6px 16px; border-radius: 100px;
-    font-size: 0.8rem; color: #a855f7; font-weight: 500;
+    font-size: 0.8rem; color: #fb923c; font-weight: 500;
     margin-bottom: 32px; letter-spacing: 0.04em;
 }
-
 .sb-hero-badge-dot {
     width: 6px; height: 6px; border-radius: 50%;
-    background: #a855f7; box-shadow: 0 0 8px #a855f7;
-    animation: pulse-dot 2s infinite;
+    background: #f97316;
+    animation: pulse-dot 2.5s infinite;
 }
-
 @keyframes pulse-dot {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.5; transform: scale(0.8); }
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
 }
 
 .sb-hero-title {
-    font-family: "Outfit", sans-serif;
-    font-weight: 900;
+    font-family: "Outfit", sans-serif; font-weight: 900;
     font-size: clamp(3rem, 7vw, 6rem);
-    color: #fff; margin-bottom: 24px;
-    letter-spacing: -0.03em;
+    color: #fff; margin-bottom: 24px; letter-spacing: -0.03em;
 }
-
 .sb-hero-title span {
-    background: linear-gradient(135deg, #a855f7, #ec4899, #f97316);
+    background: linear-gradient(135deg, #f97316, #f43f5e, #fb923c, #f97316);
+    background-size: 300% 300%;
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
+    animation: gradient-shift 5s ease infinite;
+}
+@keyframes gradient-shift {
+    0%   { background-position: 0% 50%; }
+    50%  { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
 }
 
 .sb-hero-desc {
-    font-size: 1.1rem; line-height: 1.8;
-    color: #94a3b8; max-width: 580px;
+    font-size: 1.05rem; line-height: 1.8;
+    color: #94a3b8; max-width: 560px;
     margin: 0 auto 40px auto; font-weight: 300;
 }
-
 .sb-hero-actions {
     display: flex; gap: 16px; align-items: center;
-    justify-content: center; flex-wrap: wrap; margin-bottom: 64px;
+    justify-content: center; flex-wrap: wrap;
 }
-
 .sb-btn-primary {
-    background: linear-gradient(135deg, #7c3aed, #a855f7);
-    color: #fff; padding: 14px 36px;
-    font-size: 1rem; font-weight: 600;
+    background: linear-gradient(135deg, #ea580c, #f97316);
+    color: #fff; padding: 14px 36px; font-size: 1rem; font-weight: 600;
     text-decoration: none; border-radius: 8px;
-    display: inline-block;
-    box-shadow: 0 0 30px rgba(168,85,247,0.4);
-    transition: all 0.2s;
+    display: inline-block; transition: opacity 0.2s, transform 0.15s;
 }
-.sb-btn-primary:hover { box-shadow: 0 0 50px rgba(168,85,247,0.6); transform: translateY(-2px); }
-
+.sb-btn-primary:hover { opacity: 0.88; transform: translateY(-1px); }
 .sb-btn-ghost {
     background: transparent; color: #e2e8f0;
     padding: 14px 36px; font-size: 1rem;
     text-decoration: none; border-radius: 8px;
-    border: 1px solid rgba(226,232,240,0.2);
+    border: 1px solid rgba(226,232,240,0.18);
     display: inline-flex; align-items: center; gap: 8px;
     transition: all 0.2s;
 }
-.sb-btn-ghost:hover { border-color: rgba(226,232,240,0.5); }
+.sb-btn-ghost:hover { border-color: rgba(226,232,240,0.4); }
 
-.sb-mic-wrap { display: flex; justify-content: center; cursor: pointer; }
-
-.sb-mic-outer {
-    width: 100px; height: 100px; border-radius: 50%;
-    background: rgba(168,85,247,0.08);
-    border: 1px solid rgba(168,85,247,0.2);
-    display: flex; align-items: center; justify-content: center;
-    animation: mic-pulse 3s infinite;
-    transition: all 0.3s;
-}
-.sb-mic-outer:hover { background: rgba(168,85,247,0.15); box-shadow: 0 0 40px rgba(168,85,247,0.4); transform: scale(1.05); }
-
-.sb-mic-inner {
-    width: 68px; height: 68px; border-radius: 50%;
-    background: linear-gradient(135deg, #7c3aed, #a855f7, #ec4899);
-    display: flex; align-items: center; justify-content: center;
-    box-shadow: 0 0 30px rgba(168,85,247,0.6);
-}
-
-@keyframes mic-pulse {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(168,85,247,0.3); }
-    50% { box-shadow: 0 0 0 20px rgba(168,85,247,0); }
-}
-
-.sb-mic-label { font-size: 0.78rem; color: #475569; margin-top: 14px; letter-spacing: 0.08em; text-transform: uppercase; }
-
+/* HERO GLOWS */
 .sb-hero-glow {
     position: absolute; top: 50%; left: 50%;
-    transform: translate(-50%,-50%);
-    width: 800px; height: 600px;
-    background: radial-gradient(ellipse at center, rgba(124,58,237,0.12) 0%, rgba(168,85,247,0.06) 40%, transparent 70%);
+    transform: translate(-50%, -50%);
+    width: 650px; height: 650px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(249,115,22,0.13) 0%, rgba(249,115,22,0.04) 40%, transparent 70%);
     pointer-events: none; z-index: 1;
+    transition: left 0.65s cubic-bezier(0.23, 1, 0.32, 1), top 0.65s cubic-bezier(0.23, 1, 0.32, 1);
 }
-.sb-hero-glow-left {
-    position: absolute; top: 30%; left: -10%;
-    width: 400px; height: 400px;
-    background: radial-gradient(circle, rgba(239,68,68,0.08) 0%, transparent 70%);
+.sb-hero-glow-ambient {
+    position: absolute; top: 25%; right: 12%;
+    width: 420px; height: 420px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(244,63,94,0.09) 0%, transparent 70%);
     pointer-events: none; z-index: 1;
+    animation: ambient-drift 9s ease-in-out infinite;
 }
-.sb-hero-glow-right {
-    position: absolute; top: 20%; right: -5%;
-    width: 350px; height: 350px;
-    background: radial-gradient(circle, rgba(59,130,246,0.08) 0%, transparent 70%);
+.sb-hero-glow-ambient-2 {
+    position: absolute; bottom: 15%; left: 12%;
+    width: 320px; height: 320px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(251,146,60,0.08) 0%, transparent 70%);
     pointer-events: none; z-index: 1;
+    animation: ambient-drift 11s ease-in-out infinite reverse;
+}
+@keyframes ambient-drift {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    33%       { transform: translate(28px, -22px) scale(1.07); }
+    66%       { transform: translate(-18px, 24px) scale(0.94); }
 }
 
-.sb-waveform-wrap {
-    position: absolute; bottom: 0; left: 0; right: 0;
-    height: 180px; opacity: 0.5; pointer-events: none; z-index: 1; overflow: hidden;
-}
-
+/* STATS */
 .sb-stats-strip {
     background: rgba(255,255,255,0.02);
     border-top: 1px solid rgba(255,255,255,0.05);
@@ -1839,182 +1809,135 @@ body, .gradio-container {
 }
 .sb-stat-item { text-align: center; }
 .sb-stat-num {
-    font-family: "Outfit", sans-serif;
-    font-weight: 900;
-    font-size: 2.2rem; font-weight: 800;
-    background: linear-gradient(135deg, #a855f7, #ec4899);
+    font-family: "Outfit", sans-serif; font-weight: 800; font-size: 2.2rem;
+    background: linear-gradient(135deg, #f97316, #f43f5e);
     -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
     line-height: 1; margin-bottom: 6px;
 }
 .sb-stat-label { font-size: 0.78rem; color: #475569; letter-spacing: 0.1em; text-transform: uppercase; }
 
+/* SECTIONS */
 .sb-section { padding: 96px 48px; }
-.sb-section-dark { background: #0a0a0f; }
+.sb-section-dark { background: #09090f; }
 .sb-section-alt { background: #0d0d14; }
-
 .sb-section-label {
     font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em;
-    text-transform: uppercase; color: #a855f7; margin-bottom: 16px;
+    text-transform: uppercase; color: #f97316; margin-bottom: 16px;
     display: flex; align-items: center; gap: 8px;
 }
-.sb-section-label::before { content: ''; width: 24px; height: 1px; background: #a855f7; }
-
+.sb-section-label::before { content: ''; width: 24px; height: 1px; background: linear-gradient(90deg, #f97316, #f43f5e); }
 .sb-section-title {
-    font-family: "Outfit", sans-serif;
-    font-weight: 900;
+    font-family: "Outfit", sans-serif; font-weight: 800;
     font-size: clamp(2rem, 4vw, 3rem);
     color: #fff; margin-bottom: 16px; letter-spacing: -0.02em;
 }
+.sb-section-sub { font-size: 1rem; line-height: 1.75; color: #475569; max-width: 560px; font-weight: 300; margin-bottom: 48px; }
 
-.sb-section-sub {
-    font-size: 1rem; line-height: 1.75; color: #475569;
-    max-width: 560px; font-weight: 300; margin-bottom: 48px;
-}
-
+/* STEPS */
 .sb-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 24px; }
-
 .sb-step {
-    background: rgba(255,255,255,0.02);
-    border: 1px solid rgba(255,255,255,0.06);
+    background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06);
     padding: 32px 28px; border-radius: 12px;
-    transition: border-color 0.3s, background 0.3s;
-    position: relative; overflow: hidden;
+    position: relative; overflow: hidden; transition: border-color 0.3s, background 0.3s;
 }
 .sb-step::before {
     content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
-    background: linear-gradient(90deg, transparent, rgba(168,85,247,0.5), transparent);
+    background: linear-gradient(90deg, transparent, rgba(249,115,22,0.6), transparent);
     opacity: 0; transition: opacity 0.3s;
 }
-.sb-step:hover { border-color: rgba(168,85,247,0.3); background: rgba(168,85,247,0.04); }
+.sb-step:hover { border-color: rgba(249,115,22,0.25); background: rgba(249,115,22,0.03); }
 .sb-step:hover::before { opacity: 1; }
-
-.sb-step-num { font-size: 0.72rem; font-weight: 700; color: #a855f7; letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 20px; }
-.sb-step-icon { width: 44px; height: 44px; border-radius: 10px; background: rgba(168,85,247,0.1); border: 1px solid rgba(168,85,247,0.2); display: flex; align-items: center; justify-content: center; margin-bottom: 20px; font-size: 20px; }
-.sb-step-title {font-family: "Outfit", sans-serif; font-weight: 900; font-size: 1.1rem; color: #f1f5f9; margin-bottom: 10px; }
+.sb-step-num { font-size: 0.72rem; font-weight: 700; color: #f97316; letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 20px; }
+.sb-step-icon { width: 44px; height: 44px; border-radius: 10px; background: rgba(249,115,22,0.08); border: 1px solid rgba(249,115,22,0.2); display: flex; align-items: center; justify-content: center; margin-bottom: 20px; font-size: 20px; }
+.sb-step-title { font-family: "Outfit", sans-serif; font-weight: 700; font-size: 1.1rem; color: #f1f5f9; margin-bottom: 10px; }
 .sb-step-desc { font-size: 0.9rem; line-height: 1.7; color: #475569; font-weight: 300; }
 
+/* VIDEO */
 .sb-video-container {
-    position: relative; padding-bottom: 56.25%;
-    background: rgba(255,255,255,0.02);
-    border: 1px solid rgba(255,255,255,0.06);
-    border-radius: 12px; overflow: hidden; margin-top: 40px; max-width: 900px;
+    position: relative; padding-bottom: 56.25%; background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; overflow: hidden; margin-top: 40px; max-width: 900px;
 }
 .sb-video-container video { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
 .sb-video-placeholder { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; }
-.sb-play-btn { width: 72px; height: 72px; border-radius: 50%; background: linear-gradient(135deg, #7c3aed, #a855f7); display: flex; align-items: center; justify-content: center; box-shadow: 0 0 40px rgba(168,85,247,0.5); }
+.sb-play-btn { width: 72px; height: 72px; border-radius: 50%; background: linear-gradient(135deg, #ea580c, #f97316); display: flex; align-items: center; justify-content: center; transition: transform 0.2s; }
+.sb-play-btn:hover { transform: scale(1.06); }
 .sb-video-placeholder p { color: #475569; font-size: 0.9rem; }
 
+/* SAMPLES */
 .sb-samples-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; margin-top: 40px; }
 .sb-sample-card { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); padding: 20px 24px; border-radius: 10px; display: flex; flex-direction: column; gap: 12px; transition: border-color 0.2s, background 0.2s; }
-.sb-sample-card:hover { border-color: rgba(168,85,247,0.3); background: rgba(168,85,247,0.04); }
-.sb-sample-label { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #a855f7; }
-.sb-sample-name {font-family: "Outfit", sans-serif; font-weight: 900; font-size: 0.95rem; color: #f1f5f9; }
-.sb-sample-dl { display: inline-block; margin-top: 4px; font-size: 0.8rem; font-weight: 500; padding: 8px 18px; border-radius: 6px; background: rgba(168,85,247,0.1); border: 1px solid rgba(168,85,247,0.3); color: #a855f7; text-decoration: none; transition: all 0.2s; }
-.sb-sample-dl:hover { background: rgba(168,85,247,0.2); }
+.sb-sample-card:hover { border-color: rgba(249,115,22,0.25); background: rgba(249,115,22,0.03); }
+.sb-sample-label { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #f97316; }
+.sb-sample-name { font-family: "Outfit", sans-serif; font-weight: 700; font-size: 0.95rem; color: #f1f5f9; }
+.sb-sample-dl { display: inline-block; margin-top: 4px; font-size: 0.8rem; font-weight: 500; padding: 8px 18px; border-radius: 6px; background: rgba(249,115,22,0.08); border: 1px solid rgba(249,115,22,0.2); color: #f97316; text-decoration: none; transition: all 0.2s; }
+.sb-sample-dl:hover { background: rgba(249,115,22,0.16); }
 
+/* SYSTEM DEMO */
 #sb-system { background: #0d0d14; padding: 0 48px 96px; }
-
-.sb-system-shell { border: 1px solid rgba(168,85,247,0.2); background: rgba(255,255,255,0.01); border-radius: 16px; overflow: hidden; box-shadow: 0 0 60px rgba(124,58,237,0.1); }
-
+.sb-system-shell { border: 1px solid rgba(249,115,22,0.18); background: rgba(255,255,255,0.01); border-radius: 16px; overflow: hidden; }
 .sb-system-topbar { background: rgba(255,255,255,0.03); border-bottom: 1px solid rgba(255,255,255,0.05); padding: 14px 24px; display: flex; align-items: center; gap: 10px; }
 .sb-topbar-dot { width: 10px; height: 10px; border-radius: 50%; }
 .sb-topbar-title { font-size: 0.8rem; color: #334155; margin-left: 8px; letter-spacing: 0.04em; }
-
 .sb-system-inner { padding: 36px; }
-
-.sb-system-inner label,
-.sb-system-inner .label-wrap span {
-    color: #64748b !important;
-    font-size: 0.78rem !important;
-    font-weight: 600 !important;
-    letter-spacing: 0.06em !important;
-    text-transform: uppercase !important;
+.sb-system-inner label, .sb-system-inner .label-wrap span {
+    color: #64748b !important; font-size: 0.78rem !important;
+    font-weight: 600 !important; letter-spacing: 0.06em !important; text-transform: uppercase !important;
 }
-
-.sb-system-inner textarea,
-.sb-system-inner input[type="text"] {
-    background: #13131f !important;
-    border: 1px solid rgba(255,255,255,0.08) !important;
-    border-radius: 8px !important;
-    color: #e2e8f0 !important;
-    font-family: 'Inter', sans-serif !important;
+.sb-system-inner textarea, .sb-system-inner input[type="text"] {
+    background: #13131f !important; border: 1px solid rgba(255,255,255,0.08) !important;
+    border-radius: 8px !important; color: #e2e8f0 !important; font-family: 'Inter', sans-serif !important;
 }
-
 .sb-system-inner textarea::placeholder { color: #334155 !important; }
-
-.sb-system-inner .block,
-.sb-system-inner .wrap { background: transparent !important; border-color: rgba(255,255,255,0.06) !important; }
-
-.sb-system-inner button {
-    border-radius: 8px !important;
-    font-family: 'Inter', sans-serif !important;
-    font-weight: 600 !important;
-    transition: all 0.2s !important;
+.sb-system-inner .block, .sb-system-inner .wrap { background: transparent !important; border-color: rgba(255,255,255,0.06) !important; }
+.sb-system-inner button { border-radius: 8px !important; font-family: 'Inter', sans-serif !important; font-weight: 600 !important; transition: all 0.2s !important; }
+.sb-system-inner button.primary, .sb-system-inner button[variant="primary"] {
+    background: linear-gradient(135deg, #ea580c, #f97316) !important; color: #fff !important; border: none !important;
 }
-
-.sb-system-inner button.primary,
-.sb-system-inner button[variant="primary"] {
-    background: linear-gradient(135deg, #7c3aed, #a855f7) !important;
-    color: #fff !important; border: none !important;
-    box-shadow: 0 0 20px rgba(168,85,247,0.3) !important;
+.sb-system-inner button.primary:hover { opacity: 0.88 !important; }
+.sb-system-inner button.secondary, .sb-system-inner button[variant="secondary"] {
+    background: rgba(249,115,22,0.06) !important; color: #f97316 !important; border: 1px solid rgba(249,115,22,0.25) !important;
 }
-.sb-system-inner button.primary:hover { box-shadow: 0 0 35px rgba(168,85,247,0.5) !important; transform: translateY(-1px) !important; }
-
-.sb-system-inner button.secondary,
-.sb-system-inner button[variant="secondary"] {
-    background: rgba(168,85,247,0.08) !important;
-    color: #a855f7 !important;
-    border: 1px solid rgba(168,85,247,0.3) !important;
+.sb-system-inner button.secondary:hover { background: rgba(249,115,22,0.12) !important; }
+.sb-system-inner [data-testid="audio"], .sb-system-inner .gr-audio {
+    background: #13131f !important; border: 1px solid rgba(255,255,255,0.08) !important; border-radius: 8px !important;
 }
-.sb-system-inner button.secondary:hover { background: rgba(168,85,247,0.15) !important; }
-
-.sb-system-inner [data-testid="audio"],
-.sb-system-inner .gr-audio {
-    background: #13131f !important;
-    border: 1px solid rgba(255,255,255,0.08) !important;
-    border-radius: 8px !important;
-}
-
-.sb-system-inner input[type="radio"] { accent-color: #a855f7 !important; }
+.sb-system-inner input[type="radio"] { accent-color: #f97316 !important; }
 .sb-system-inner select { background: #13131f !important; border: 1px solid rgba(255,255,255,0.08) !important; color: #e2e8f0 !important; border-radius: 8px !important; }
 
-#sb-feedback {
-    background: #0a0a0f; padding: 96px 48px;
-    position: relative; overflow: hidden;
-}
+/* FEEDBACK */
+#sb-feedback { background: #09090f; padding: 96px 48px; position: relative; overflow: hidden; }
 #sb-feedback::before {
     content: ''; position: absolute; top: 0; left: 50%; transform: translateX(-50%);
-    width: 600px; height: 400px;
-    background: radial-gradient(ellipse, rgba(168,85,247,0.06) 0%, transparent 70%);
+    width: 500px; height: 280px;
+    background: radial-gradient(ellipse, rgba(249,115,22,0.05) 0%, transparent 70%);
     pointer-events: none;
 }
-
 .sb-feedback-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 48px; flex-wrap: wrap; gap: 24px; position: relative; z-index: 2; }
-.sb-feedback-form-btn { display: inline-flex; align-items: center; gap: 8px; background: rgba(168,85,247,0.08); border: 1px solid rgba(168,85,247,0.3); color: #a855f7; padding: 12px 24px; font-size: 0.875rem; font-weight: 500; text-decoration: none; border-radius: 8px; transition: all 0.2s; }
-.sb-feedback-form-btn:hover { background: rgba(168,85,247,0.15); box-shadow: 0 0 20px rgba(168,85,247,0.2); }
-
+.sb-feedback-form-btn { display: inline-flex; align-items: center; gap: 8px; background: rgba(249,115,22,0.06); border: 1px solid rgba(249,115,22,0.25); color: #f97316; padding: 12px 24px; font-size: 0.875rem; font-weight: 500; text-decoration: none; border-radius: 8px; transition: all 0.2s; }
+.sb-feedback-form-btn:hover { background: rgba(249,115,22,0.12); }
 .sb-feedback-carousel { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; min-height: 220px; position: relative; z-index: 2; }
 .sb-feedback-card { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); padding: 28px; border-radius: 12px; display: flex; flex-direction: column; gap: 14px; transition: border-color 0.3s; }
-.sb-feedback-card:hover { border-color: rgba(168,85,247,0.2); }
+.sb-feedback-card:hover { border-color: rgba(249,115,22,0.18); }
 .sb-feedback-quote { font-size: 0.95rem; line-height: 1.75; color: #64748b; font-style: italic; font-weight: 300; flex: 1; }
-.sb-feedback-name { font-size: 0.78rem; font-weight: 600; color: #a855f7; letter-spacing: 0.08em; text-transform: uppercase; }
+.sb-feedback-name { font-size: 0.78rem; font-weight: 600; color: #f97316; letter-spacing: 0.08em; text-transform: uppercase; }
 .sb-feedback-placeholder { grid-column: 1 / -1; color: #334155; font-size: 0.9rem; font-style: italic; display: flex; align-items: center; justify-content: center; min-height: 120px; text-align: center; border: 1px dashed rgba(255,255,255,0.06); border-radius: 12px; }
-
 .sb-carousel-controls { display: flex; justify-content: center; gap: 8px; margin-top: 32px; position: relative; z-index: 2; }
 .sb-carousel-dot { width: 6px; height: 6px; border-radius: 50%; background: rgba(255,255,255,0.1); cursor: pointer; transition: all 0.2s; border: none; }
-.sb-carousel-dot.active { background: #a855f7; box-shadow: 0 0 8px #a855f7; }
+.sb-carousel-dot.active { background: #f97316; }
 
+/* FOOTER */
 #sb-footer { background: #070709; border-top: 1px solid rgba(255,255,255,0.04); padding: 56px 48px 40px; }
 .sb-footer-grid { display: grid; grid-template-columns: 1.5fr 1fr 1fr; gap: 48px; padding-bottom: 40px; border-bottom: 1px solid rgba(255,255,255,0.04); margin-bottom: 32px; }
-.sb-footer-brand {font-family: "Outfit", sans-serif; font-weight: 900; font-size: 1.3rem; color: #fff; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+.sb-footer-brand { font-family: "Outfit", sans-serif; font-weight: 800; font-size: 1.3rem; color: #fff; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
 .sb-footer-tagline { font-size: 0.85rem; color: #334155; line-height: 1.7; max-width: 260px; }
 .sb-footer-col-title { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: #475569; margin-bottom: 16px; }
 .sb-footer-links { display: flex; flex-direction: column; gap: 10px; }
 .sb-footer-links a { color: #334155; text-decoration: none; font-size: 0.875rem; transition: color 0.2s; }
-.sb-footer-links a:hover { color: #a855f7; }
+.sb-footer-links a:hover { color: #f97316; }
 .sb-footer-bottom { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
 .sb-footer-copy { font-size: 0.8rem; color: #1e293b; }
 
+/* RESPONSIVE */
 @media (max-width: 900px) {
     #sb-nav { padding: 0 24px; }
     .sb-section, #sb-hero, #sb-feedback, #sb-footer, #sb-system { padding-left: 24px; padding-right: 24px; }
@@ -2023,27 +1946,48 @@ body, .gradio-container {
     .sb-nav-links { display: none; }
     .sb-stats-strip { gap: 40px; padding: 32px 24px; }
 }
-
 @media (max-width: 640px) {
     .sb-steps { grid-template-columns: 1fr; }
     .sb-samples-grid { grid-template-columns: 1fr; }
     .sb-hero-title { font-size: 2.5rem; }
 }
-
 .gradio-container .block { border-radius: 8px !important; }
 footer.svelte-1rjryqp { display: none !important; }
+
+/* Video — centred and full width */
+.sb-video-container {
+    margin-left: auto !important;
+    margin-right: auto !important;
+    max-width: 100% !important;
+}
+
+/* Demo area helpers */
+.sb-demo-divider {
+    height: 1px;
+    background: rgba(255,255,255,0.06);
+    margin: 18px 0 16px;
+}
+.sb-demo-section-label {
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #475569;
+    margin-bottom: 8px;
+}
+
 """
 
 
 # =========================================================
 # UI
 # =========================================================
-with gr.Blocks(title="SpeechBridge") as demo:
+with gr.Blocks(css=CUSTOM_CSS, title="SpeechBridge") as demo:
 
     gr.HTML("""
     <nav id="sb-nav">
         <div class="sb-logo">
-            <div class="sb-logo-dot"></div>
+            <div class="sb-logo-mark"></div>
             SpeechBridge
         </div>
         <div class="sb-nav-links">
@@ -2058,9 +2002,9 @@ with gr.Blocks(title="SpeechBridge") as demo:
 
     gr.HTML("""
     <section id="sb-hero">
-        <div class="sb-hero-glow"></div>
-        <div class="sb-hero-glow-left"></div>
-        <div class="sb-hero-glow-right"></div>
+        <div class="sb-hero-glow" id="sb-hero-glow"></div>
+        <div class="sb-hero-glow-ambient"></div>
+        <div class="sb-hero-glow-ambient-2"></div>
         <div class="sb-hero-inner">
             <div class="sb-hero-badge">
                 <div class="sb-hero-badge-dot"></div>
@@ -2082,42 +2026,32 @@ with gr.Blocks(title="SpeechBridge") as demo:
                     </svg>
                 </a>
             </div>
-            <div class="sb-mic-wrap" onclick="document.getElementById('sb-system').scrollIntoView({behavior:'smooth'})">
-                <div style="display:flex;flex-direction:column;align-items:center;">
-                    <div class="sb-mic-outer">
-                        <div class="sb-mic-inner">
-                            <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
-                                <rect x="9" y="2" width="6" height="11" rx="3" fill="white"/>
-                                <path d="M5 10a7 7 0 0014 0" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
-                                <line x1="12" y1="17" x2="12" y2="21" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
-                                <line x1="9" y1="21" x2="15" y2="21" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
-                            </svg>
-                        </div>
-                    </div>
-                    <div class="sb-mic-label">Click to try it</div>
-                </div>
-            </div>
-        </div>
-        <div class="sb-waveform-wrap">
-            <svg viewBox="0 0 1440 180" xmlns="http://www.w3.org/2000/svg" width="100%" height="180" preserveAspectRatio="none">
-                <path d="M0,90 C60,90 60,30 120,30 C180,30 180,150 240,150 C300,150 300,60 360,60 C420,60 420,120 480,120 C540,120 540,20 600,20 C660,20 660,160 720,160 C780,160 780,40 840,40 C900,40 900,130 960,130 C1020,130 1020,50 1080,50 C1140,50 1140,140 1200,140 C1260,140 1260,70 1320,70 C1380,70 1380,110 1440,110 L1440,180 L0,180 Z" fill="url(#wave1)" opacity="0.3"/>
-                <path d="M0,110 C80,110 80,50 160,50 C240,50 240,140 320,140 C400,140 400,70 480,70 C560,70 560,130 640,130 C720,130 720,30 800,30 C880,30 880,150 960,150 C1040,150 1040,60 1120,60 C1200,60 1200,120 1280,120 C1360,120 1360,80 1440,80 L1440,180 L0,180 Z" fill="url(#wave2)" opacity="0.2"/>
-                <defs>
-                    <linearGradient id="wave1" x1="0" y1="0" x2="1" y2="0">
-                        <stop offset="0%" stop-color="#ef4444"/>
-                        <stop offset="50%" stop-color="#a855f7"/>
-                        <stop offset="100%" stop-color="#3b82f6"/>
-                    </linearGradient>
-                    <linearGradient id="wave2" x1="0" y1="0" x2="1" y2="0">
-                        <stop offset="0%" stop-color="#3b82f6"/>
-                        <stop offset="50%" stop-color="#ec4899"/>
-                        <stop offset="100%" stop-color="#f97316"/>
-                    </linearGradient>
-                </defs>
-            </svg>
         </div>
     </section>
     """)
+
+    gr.HTML("""
+    <script>
+    (function() {
+        function initGlow() {
+            var hero = document.getElementById('sb-hero');
+            var glow = document.getElementById('sb-hero-glow');
+            if (!hero || !glow) { setTimeout(initGlow, 300); return; }
+            hero.addEventListener('mousemove', function(e) {
+                var r = hero.getBoundingClientRect();
+                glow.style.left = (e.clientX - r.left) + 'px';
+                glow.style.top  = (e.clientY - r.top)  + 'px';
+            });
+            hero.addEventListener('mouseleave', function() {
+                glow.style.left = '50%';
+                glow.style.top  = '50%';
+            });
+        }
+        setTimeout(initGlow, 600);
+    })();
+    </script>
+    """)
+
 
     gr.HTML("""
     <div class="sb-stats-strip">
@@ -2147,20 +2081,17 @@ with gr.Blocks(title="SpeechBridge") as demo:
         <p class="sb-section-sub">Upload any French audio clip and receive translated English speech, optionally in the original speaker's voice.</p>
         <div class="sb-steps">
             <div class="sb-step">
-                <div class="sb-step-num">Step 01</div>
-                <div class="sb-step-icon">🎙️</div>
+                <div class="sb-step-num">01</div>
                 <div class="sb-step-title">Upload your audio</div>
                 <div class="sb-step-desc">Record or upload a French speech clip in any format. The system handles all conversion automatically.</div>
             </div>
             <div class="sb-step">
-                <div class="sb-step-num">Step 02</div>
-                <div class="sb-step-icon">⚙️</div>
+                <div class="sb-step-num">02</div>
                 <div class="sb-step-title">Choose output mode</div>
                 <div class="sb-step-desc">Select standard translation for clean English speech, or voice cloning to preserve the original speaker's voice.</div>
             </div>
             <div class="sb-step">
-                <div class="sb-step-num">Step 03</div>
-                <div class="sb-step-icon">🔊</div>
+                <div class="sb-step-num">03</div>
                 <div class="sb-step-title">Receive translated speech</div>
                 <div class="sb-step-desc">Get translated English text and synthesised audio — with cloning, it sounds like the same person speaking English.</div>
             </div>
@@ -2168,23 +2099,25 @@ with gr.Blocks(title="SpeechBridge") as demo:
     </section>
     """)
 
+
     gr.HTML("""
     <section class="sb-section sb-section-dark">
         <div class="sb-section-label">See it in action</div>
         <h2 class="sb-section-title">Watch a full translation run</h2>
         <div class="sb-video-container">
-            <video id="sb-video" controls style="display:none; border-radius:12px;">
+            <video id="sb-video" controls style="display:none;">
                 <source src="demo.mp4" type="video/mp4">
             </video>
             <div class="sb-video-placeholder" id="sb-video-placeholder">
                 <div class="sb-play-btn">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7L8 5z"/></svg>
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="#0D0D0D"><path d="M8 5v14l11-7L8 5z"/></svg>
                 </div>
                 <p>Demo video coming soon</p>
             </div>
         </div>
     </section>
     """)
+
 
     gr.HTML("""
     <section id="sb-samples" class="sb-section sb-section-alt">
@@ -2236,20 +2169,68 @@ with gr.Blocks(title="SpeechBridge") as demo:
             <div class="sb-system-inner">
     """)
 
+    # with gr.Row():
+    #     with gr.Column(scale=1):
+    #         model_status = gr.Textbox(
+    #             label="System status",
+    #             value="Models initialising in the background. Ready shortly.",
+    #             interactive=False, lines=3,
+    #         )
+    #         init_btn = gr.Button("Initialise models manually", variant="secondary")
+    #
+    #         gr.HTML('<div style="margin:20px 0 8px;font-size:0.75rem;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:#475569;">Input language</div>')
+    #         input_lang = gr.Dropdown(choices=["French", "More languages coming soon…"], value="French", label="", interactive=False)
+    #
+    #         gr.HTML('<div style="margin:16px 0 8px;font-size:0.75rem;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:#475569;">Output language</div>')
+    #         output_lang = gr.Dropdown(choices=["English", "More languages coming soon…"], value="English", label="", interactive=False)
+    #
+    #         mode = gr.Radio(
+    #             choices=["Translate without voice cloning", "Translate with voice cloning"],
+    #             value="Translate without voice cloning",
+    #             label="Translation mode"
+    #         )
+    #
+    #         audio_input = gr.Audio(
+    #             sources=["upload", "microphone"],
+    #             type="filepath",
+    #             label="Upload or record French speech",
+    #             # format="wav",
+    #         )
+    #
+    #         gr.Markdown("<div style='font-size:0.8rem;color:#334155;line-height:1.6;margin-top:6px;'>Upload any format or record directly. For voice cloning, the uploaded clip also serves as the speaker reference.</div>")
+    #
+    #         translate_btn = gr.Button("Run translation", variant="primary")
+    #
+    #     with gr.Column(scale=1):
+    #         translated_text = gr.Textbox(label="English translation", lines=6, placeholder="Translated English text will appear here.")
+    #         output_audio = gr.Audio(type="filepath", label="Generated English speech")
+    #         runtime_info = gr.Textbox(label="Runtime breakdown", lines=6, interactive=False)
+    #         pipeline_status = gr.Textbox(label="Status", lines=3, interactive=False)
+    #
+    # gr.HTML("</div></div></section>")
+
+
     with gr.Row():
         with gr.Column(scale=1):
             model_status = gr.Textbox(
                 label="System status",
                 value="Models initialising in the background. Ready shortly.",
-                interactive=False, lines=3,
+                interactive=False, lines=2,
             )
             init_btn = gr.Button("Initialise models manually", variant="secondary")
 
-            gr.HTML('<div style="margin:20px 0 8px;font-size:0.75rem;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:#475569;">Input language</div>')
-            input_lang = gr.Dropdown(choices=["French", "More languages coming soon…"], value="French", label="", interactive=False)
+            gr.HTML('<div class="sb-demo-divider"></div>')
+            gr.HTML('<div class="sb-demo-section-label">Language pair</div>')
 
-            gr.HTML('<div style="margin:16px 0 8px;font-size:0.75rem;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:#475569;">Output language</div>')
-            output_lang = gr.Dropdown(choices=["English", "More languages coming soon…"], value="English", label="", interactive=False)
+            with gr.Row():
+                input_lang = gr.Dropdown(
+                    choices=["French", "More languages coming soon…"],
+                    value="French", label="From", interactive=True
+                )
+                output_lang = gr.Dropdown(
+                    choices=["English", "More languages coming soon…"],
+                    value="English", label="To", interactive=True
+                )
 
             mode = gr.Radio(
                 choices=["Translate without voice cloning", "Translate with voice cloning"],
@@ -2261,20 +2242,33 @@ with gr.Blocks(title="SpeechBridge") as demo:
                 sources=["upload", "microphone"],
                 type="filepath",
                 label="Upload or record French speech",
-                format="wav",
             )
 
-            gr.Markdown("<div style='font-size:0.8rem;color:#334155;line-height:1.6;margin-top:6px;'>Upload any format or record directly. For voice cloning, the uploaded clip also serves as the speaker reference.</div>")
+            audio_state = gr.State()
+
+            audio_input.change(
+                fn=persist_audio_file,
+                inputs=audio_input,
+                outputs=audio_state
+            )
+
+            gr.Markdown("<div style='font-size:0.78rem;color:#475569;line-height:1.6;margin-top:4px;'>Upload any format or record directly. For voice cloning, the clip also serves as the speaker reference.</div>")
 
             translate_btn = gr.Button("Run translation", variant="primary")
 
         with gr.Column(scale=1):
-            translated_text = gr.Textbox(label="English translation", lines=6, placeholder="Translated English text will appear here.")
+            translated_text = gr.Textbox(
+                label="English translation",
+                lines=8,
+                placeholder="Translated English text will appear here."
+            )
             output_audio = gr.Audio(type="filepath", label="Generated English speech")
-            runtime_info = gr.Textbox(label="Runtime breakdown", lines=6, interactive=False)
-            pipeline_status = gr.Textbox(label="Status", lines=3, interactive=False)
+            with gr.Row():
+                runtime_info = gr.Textbox(label="Runtime breakdown", lines=4, interactive=False)
+                pipeline_status = gr.Textbox(label="Status", lines=4, interactive=False)
 
     gr.HTML("</div></div></section>")
+
 
     gr.HTML(f"""
     <section id="sb-feedback">
@@ -2313,7 +2307,7 @@ with gr.Blocks(title="SpeechBridge") as demo:
                 var s = '';
                 var filled = Math.round(n || 0);
                 for (var i = 1; i <= 5; i++) {{
-                    s += '<span style="color:#a855f7;font-size:13px;">' + (i <= filled ? '★' : '☆') + '</span>';
+                    s += '<span style="color:#f97316;font-size:13px;">' + (i <= filled ? '★' : '☆') + '</span>';
                 }}
                 return s;
             }}
@@ -2389,6 +2383,7 @@ with gr.Blocks(title="SpeechBridge") as demo:
             }}
 
             setTimeout(loadFeedback, 1500);
+            
         }}
         """
     )
@@ -2398,7 +2393,7 @@ with gr.Blocks(title="SpeechBridge") as demo:
         <div class="sb-footer-grid">
             <div>
                 <div class="sb-footer-brand">
-                    <div class="sb-logo-dot"></div>
+                    <div class="sb-footer-brand-dot"></div>
                     SpeechBridge
                 </div>
                 <p class="sb-footer-tagline">A speech-to-speech translation system combining neural translation with speaker-preserving voice cloning.</p>
@@ -2429,7 +2424,7 @@ with gr.Blocks(title="SpeechBridge") as demo:
     init_btn.click(fn=initialise_models, outputs=model_status)
     translate_btn.click(
         fn=run_app,
-        inputs=[mode, audio_input],
+        inputs=[mode, audio_state],
         outputs=[translated_text, output_audio, runtime_info, pipeline_status]
     )
 
@@ -2437,4 +2432,4 @@ with gr.Blocks(title="SpeechBridge") as demo:
 if __name__ == "__main__":
     init_thread = threading.Thread(target=background_init, daemon=True)
     init_thread.start()
-    demo.launch(css=CUSTOM_CSS)
+    demo.launch()
