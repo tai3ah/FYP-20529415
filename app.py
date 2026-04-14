@@ -506,11 +506,24 @@ body, .gradio-container {
 
 /* HERO GLOWS */
 .sb-hero-glow {
-    position: absolute; top: 50%; left: 50%;
+    position: absolute;
+    top: 48%;
+    left: 50%;
     transform: translate(-50%, -50%);
-    width: 650px; height: 650px; border-radius: 50%;
-    background: radial-gradient(circle, rgba(249,115,22,0.13) 0%, rgba(249,115,22,0.04) 40%, transparent 70%);
-    pointer-events: none; z-index: 1;
+    width: 900px;
+    height: 900px;
+    border-radius: 50%;
+    background: radial-gradient(
+        circle,
+        rgba(249,115,22,0.22) 0%,
+        rgba(249,115,22,0.12) 22%,
+        rgba(244,63,94,0.08) 42%,
+        rgba(249,115,22,0.03) 62%,
+        transparent 78%
+    );
+    filter: blur(18px);
+    pointer-events: none;
+    z-index: 1;
     transition: left 0.65s cubic-bezier(0.23, 1, 0.32, 1), top 0.65s cubic-bezier(0.23, 1, 0.32, 1);
 }
 .sb-hero-glow-ambient {
@@ -930,7 +943,17 @@ with gr.Blocks(title="SpeechBridge") as demo:
 
     # ── Soundwave canvas (fixed background, behind everything) ──
     gr.HTML("""
-    <canvas id="sb-wave-canvas" style="position:fixed;top:0;left:0;width:100%;height:100%;z-index:-1;pointer-events:none;"></canvas>
+   <canvas id="sb-wave-canvas" style="
+    position:fixed;
+    top:0;
+    left:0;
+    width:100%;
+    height:100%;
+    z-index:-1;
+    pointer-events:none;
+    opacity:0.95;
+    filter: blur(0.2px);
+"></canvas>
     <script>
     (function() {
         var canvas, ctx, W, H, scrollY = 0;
