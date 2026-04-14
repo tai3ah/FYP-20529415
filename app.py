@@ -1775,17 +1775,23 @@ body, .gradio-container {
 .sb-sample-dl:hover { background: rgba(249,115,22,0.16); }
 
 /* SYSTEM DEMO */
-#sb-system { background: #0d0d14; padding-bottom: 0 !important; }
+/* Outer section column — full-width dark background, contains heading + shell */
+#sb-system {
+    background: #0d0d14 !important;
+    padding: 96px 48px 96px !important;
+    border: none !important;
+    box-shadow: none !important;
+}
 
-/* Shell — the gr.Column that actually wraps the Gradio components */
+/* Terminal shell card — sits inside the section, below the heading */
 #sb-demo-shell {
-    border: 1px solid rgba(249,115,22,0.18) !important;
+    border: 0px solid rgba(249,115,22,0.18) !important;
     background: rgba(255,255,255,0.01) !important;
-    border-radius: 16px !important;
+    border-radius: 0px !important;
     overflow: hidden !important;
-    margin: 0 48px 96px !important;
     padding: 0 !important;
     box-shadow: none !important;
+    margin-top: 0 !important;
 }
 
 .sb-system-topbar { background: rgba(255,255,255,0.03); border-bottom: 1px solid rgba(255,255,255,0.05); padding: 14px 24px; display: flex; align-items: center; gap: 10px; }
@@ -2153,20 +2159,13 @@ with gr.Blocks(title="SpeechBridge") as demo:
     """)
 
     # ── System demo ──
-    gr.HTML("""
-    <section id="sb-system" class="sb-section sb-section-dark">
+    with gr.Column(elem_id="sb-system"):
+        gr.HTML("""
         <div class="sb-section-label">Live demo</div>
         <h2 class="sb-section-title">Try SpeechBridge</h2>
         <p class="sb-section-sub">Upload or record speech and receive an English translation — with or without voice cloning. French uses the LoRA fine-tuned model.</p>
-    </section>
-    """)
-
-    with gr.Column(elem_id="sb-demo-shell"):
-        gr.HTML("""
-        <div class="sb-system-topbar">
-            <span class="sb-topbar-title">speechbridge — live translation interface</span>
-        </div>
         """)
+
         with gr.Column(elem_id="sb-demo-inner"):
             with gr.Row():
                 with gr.Column(scale=1):
@@ -2186,10 +2185,10 @@ with gr.Blocks(title="SpeechBridge") as demo:
                     gr.HTML('<div class="sb-demo-section-label">Language pair</div>')
                     with gr.Row(elem_classes=["sb-lang-row"]):
                         input_lang = gr.Dropdown(
-                            choices=["French (fine-tuned ★)", "Other languages"],
-                            value="French (fine-tuned ★)",
+                            choices=["French (★)", "Other languages"],
+                            value="French (★)",
                             label="From",
-                            show_label= False,
+                            show_label=False,
                             interactive=True,
                             elem_classes=["sb-no-box"]
                         )
@@ -2198,7 +2197,7 @@ with gr.Blocks(title="SpeechBridge") as demo:
                             choices=["English"],
                             value="English",
                             label="To",
-                            show_label= False,
+                            show_label=False,
                             interactive=False,
                             elem_classes=["sb-no-box"]
                         )
@@ -2210,7 +2209,7 @@ with gr.Blocks(title="SpeechBridge") as demo:
                     mode = gr.Radio(
                         choices=["Translate without voice cloning", "Translate with voice cloning"],
                         value="Translate without voice cloning",
-                        show_label= False,
+                        show_label=False,
                         elem_classes=["sb-no-box"]
                     )
 
@@ -2225,7 +2224,7 @@ with gr.Blocks(title="SpeechBridge") as demo:
 
                     gr.Markdown(
                         "<div style='font-size:0.78rem;color:#475569;line-height:1.6;margin-top:4px;'>"
-                        "Upload any format or record directly. For voice cloning, the clip also serves as the speaker reference. "
+                        "Upload audio in any format or record directly. For voice cloning, the clip also serves as the speaker reference. "
                         "<strong style='color:#f97316;'>French uses the LoRA fine-tuned model.</strong> "
                         "Other languages use base Whisper with auto language detection."
                         "</div>"
