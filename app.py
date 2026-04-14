@@ -1775,36 +1775,58 @@ body, .gradio-container {
 .sb-sample-dl:hover { background: rgba(249,115,22,0.16); }
 
 /* SYSTEM DEMO */
-#sb-system { background: #0d0d14; padding: 0 48px 96px; }
-.sb-system-shell { border: 1px solid rgba(249,115,22,0.18); background: rgba(255,255,255,0.01); border-radius: 16px; overflow: hidden; }
+#sb-system { background: #0d0d14; padding-bottom: 0 !important; }
+
+/* Shell — the gr.Column that actually wraps the Gradio components */
+#sb-demo-shell {
+    border: 1px solid rgba(249,115,22,0.18) !important;
+    background: rgba(255,255,255,0.01) !important;
+    border-radius: 16px !important;
+    overflow: hidden !important;
+    margin: 0 48px 96px !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+}
+
 .sb-system-topbar { background: rgba(255,255,255,0.03); border-bottom: 1px solid rgba(255,255,255,0.05); padding: 14px 24px; display: flex; align-items: center; gap: 10px; }
 .sb-topbar-dot { width: 10px; height: 10px; border-radius: 50%; }
 .sb-topbar-title { font-size: 0.8rem; color: #334155; margin-left: 8px; letter-spacing: 0.04em; }
-.sb-system-inner { padding: 36px; }
-.sb-system-inner label, .sb-system-inner .label-wrap span {
+
+/* Inner content area — real DOM parent of all Gradio component blocks */
+#sb-demo-inner { padding: 36px !important; background: transparent !important; border: none !important; box-shadow: none !important; }
+#sb-demo-inner label, #sb-demo-inner .label-wrap span {
     color: #64748b !important; font-size: 0.78rem !important;
     font-weight: 600 !important; letter-spacing: 0.06em !important; text-transform: uppercase !important;
 }
-.sb-system-inner textarea, .sb-system-inner input[type="text"] {
+#sb-demo-inner textarea, #sb-demo-inner input[type="text"] {
     background: #13131f !important; border: 1px solid rgba(255,255,255,0.08) !important;
     border-radius: 8px !important; color: #e2e8f0 !important; font-family: 'Inter', sans-serif !important;
 }
-.sb-system-inner textarea::placeholder { color: #334155 !important; }
-.sb-system-inner .block, .sb-system-inner .wrap { background: transparent !important; border-color: rgba(255,255,255,0.06) !important; }
-.sb-system-inner button { border-radius: 8px !important; font-family: 'Inter', sans-serif !important; font-weight: 600 !important; transition: all 0.2s !important; }
-.sb-system-inner button.primary, .sb-system-inner button[variant="primary"] {
+#sb-demo-inner textarea::placeholder { color: #334155 !important; }
+#sb-demo-inner .block,
+#sb-demo-inner .wrap,
+#sb-demo-inner .form { background: transparent !important; border: none !important; box-shadow: none !important; }
+#sb-demo-inner button { border-radius: 8px !important; font-family: 'Inter', sans-serif !important; font-weight: 600 !important; transition: all 0.2s !important; }
+#sb-demo-inner button.primary, #sb-demo-inner button[variant="primary"] {
     background: linear-gradient(135deg, #ea580c, #f97316) !important; color: #fff !important; border: none !important;
 }
-.sb-system-inner button.primary:hover { opacity: 0.88 !important; }
-.sb-system-inner button.secondary, .sb-system-inner button[variant="secondary"] {
+#sb-demo-inner button.primary:hover { opacity: 0.88 !important; }
+#sb-demo-inner button.secondary, #sb-demo-inner button[variant="secondary"] {
     background: rgba(249,115,22,0.06) !important; color: #f97316 !important; border: 1px solid rgba(249,115,22,0.25) !important;
 }
-.sb-system-inner button.secondary:hover { background: rgba(249,115,22,0.12) !important; }
-.sb-system-inner [data-testid="audio"], .sb-system-inner .gr-audio {
+#sb-demo-inner button.secondary:hover { background: rgba(249,115,22,0.12) !important; }
+#sb-demo-inner [data-testid="audio"], #sb-demo-inner .gr-audio {
     background: #13131f !important; border: 1px solid rgba(255,255,255,0.08) !important; border-radius: 8px !important;
 }
-.sb-system-inner input[type="radio"] { accent-color: #f97316 !important; }
-.sb-system-inner select { background: #13131f !important; border: 1px solid rgba(255,255,255,0.08) !important; color: #e2e8f0 !important; border-radius: 8px !important; }
+#sb-demo-inner input[type="radio"] { accent-color: #f97316 !important; }
+#sb-demo-inner select { background: #13131f !important; border: 1px solid rgba(255,255,255,0.08) !important; color: #e2e8f0 !important; border-radius: 8px !important; }
+
+/* Re-box audio + text outputs — uses double-ID specificity to beat #sb-demo-inner .block */
+#sb-demo-inner #sb-audio-in,
+#sb-demo-inner #sb-audio-out { background: #13131f !important; border: 1px solid rgba(255,255,255,0.08) !important; border-radius: 8px !important; }
+#sb-demo-inner #sb-text-out,
+#sb-demo-inner #sb-runtime-box,
+#sb-demo-inner #sb-status-box { background: #13131f !important; border: 1px solid rgba(255,255,255,0.08) !important; border-radius: 8px !important; padding: 12px !important; }
 
 /* Model status indicator */
 .sb-model-status {
@@ -1813,8 +1835,8 @@ body, .gradio-container {
     border-radius: 6px; margin-bottom: 20px;
 }
 .sb-model-ready {
-    background: rgba(34,197,94,0.08); border: 1px solid rgba(34,197,94,0.2);
-    color: #22c55e;
+    background: rgba(249,115,22,0.08); border: 1px solid rgba(249,115,22,0.25);
+    color: #f97316;
 }
 .sb-model-loading {
     background: rgba(249,115,22,0.06); border: 1px solid rgba(249,115,22,0.15);
@@ -1824,8 +1846,13 @@ body, .gradio-container {
 .sb-spin { display: inline-block; animation: spin 1.4s linear infinite; }
 
 /* Flat controls — no box for lang row and mode */
+.sb-no-box,
 .sb-no-box > .block,
-.sb-no-box .block { background: transparent !important; border: none !important; box-shadow: none !important; padding: 0 !important; }
+.sb-no-box .block,
+.sb-no-box .wrap,
+.sb-no-box .form,
+.sb-no-box fieldset,
+.sb-no-box > div { background: transparent !important; border: none !important; box-shadow: none !important; padding: 0 !important; }
 .sb-lang-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
 .sb-lang-arrow { color: #475569; font-size: 1rem; flex-shrink: 0; padding-top: 20px; }
 
@@ -2127,94 +2154,96 @@ with gr.Blocks(title="SpeechBridge") as demo:
 
     # ── System demo ──
     gr.HTML("""
-    <section id="sb-system" class="sb-section sb-section-dark" style="padding-bottom:96px;">
+    <section id="sb-system" class="sb-section sb-section-dark">
         <div class="sb-section-label">Live demo</div>
         <h2 class="sb-section-title">Try SpeechBridge</h2>
         <p class="sb-section-sub">Upload or record speech and receive an English translation — with or without voice cloning. French uses the LoRA fine-tuned model.</p>
-        <div class="sb-system-shell">
-            <div class="sb-system-topbar">
-                <div class="sb-topbar-dot" style="background:#ef4444;"></div>
-                <div class="sb-topbar-dot" style="background:#f59e0b;"></div>
-                <div class="sb-topbar-dot" style="background:#10b981;"></div>
-                <span class="sb-topbar-title">speechbridge — live translation interface</span>
-            </div>
-            <div class="sb-system-inner">
+    </section>
     """)
 
-    with gr.Row():
-        with gr.Column(scale=1):
-
-            # Smart model status — no textbox, just clean indicator + conditional button
-            model_status_display = gr.HTML(value=_render_model_status())
-            init_btn = gr.Button(
-                "Initialise models",
-                variant="secondary",
-                visible=not (TRANSLATION_READY and XTTS_READY)
-            )
-            status_timer = gr.Timer(value=3, active=True)
-
-            gr.HTML('<div class="sb-demo-divider"></div>')
-
-            # Language pair — flat, no box
-            gr.HTML('<div class="sb-demo-section-label">Language pair</div>')
-            with gr.Row(elem_classes=["sb-lang-row"]):
-                input_lang = gr.Dropdown(
-                    choices=["French (fine-tuned ★)", "Other languages"],
-                    value="French (fine-tuned ★)",
-                    label="From",
-                    interactive=True,
-                    elem_classes=["sb-no-box"]
-                )
-                gr.HTML('<div class="sb-lang-arrow">→</div>')
-                output_lang = gr.Dropdown(
-                    choices=["English"],
-                    value="English",
-                    label="To",
-                    interactive=False,
-                    elem_classes=["sb-no-box"]
-                )
-
-            gr.HTML('<div class="sb-demo-divider"></div>')
-
-            # Mode — flat, no box
-            gr.HTML('<div class="sb-demo-section-label">Translation mode</div>')
-            mode = gr.Radio(
-                choices=["Translate without voice cloning", "Translate with voice cloning"],
-                value="Translate without voice cloning",
-                label="",
-                elem_classes=["sb-no-box"]
-            )
-
-            gr.HTML('<div class="sb-demo-divider"></div>')
-
-            audio_input = gr.Audio(
-                sources=["upload", "microphone"],
-                type="filepath",
-                label="Upload or record speech",
-            )
-
-            gr.Markdown(
-                "<div style='font-size:0.78rem;color:#475569;line-height:1.6;margin-top:4px;'>"
-                "Upload any format or record directly. For voice cloning, the clip also serves as the speaker reference. "
-                "<strong style='color:#f97316;'>French uses the LoRA fine-tuned model.</strong> "
-                "Other languages use base Whisper with auto language detection."
-                "</div>"
-            )
-
-            translate_btn = gr.Button("Run translation", variant="primary")
-
-        with gr.Column(scale=1):
-            translated_text = gr.Textbox(
-                label="English translation",
-                lines=8,
-                placeholder="Translated English text will appear here."
-            )
-            output_audio = gr.Audio(type="filepath", label="Generated English speech")
+    with gr.Column(elem_id="sb-demo-shell"):
+        gr.HTML("""
+        <div class="sb-system-topbar">
+            <span class="sb-topbar-title">speechbridge — live translation interface</span>
+        </div>
+        """)
+        with gr.Column(elem_id="sb-demo-inner"):
             with gr.Row():
-                runtime_info = gr.Textbox(label="Runtime breakdown", lines=4, interactive=False)
-                pipeline_status = gr.Textbox(label="Status", lines=4, interactive=False)
+                with gr.Column(scale=1):
 
-    gr.HTML("</div></div></section>")
+                    # Smart model status — no textbox, just clean indicator + conditional button
+                    model_status_display = gr.HTML(value=_render_model_status())
+                    init_btn = gr.Button(
+                        "Initialise models",
+                        variant="secondary",
+                        visible=not (TRANSLATION_READY and XTTS_READY)
+                    )
+                    status_timer = gr.Timer(value=3, active=True)
+
+                    gr.HTML('<div class="sb-demo-divider"></div>')
+
+                    # Language pair — flat, no box
+                    gr.HTML('<div class="sb-demo-section-label">Language pair</div>')
+                    with gr.Row(elem_classes=["sb-lang-row"]):
+                        input_lang = gr.Dropdown(
+                            choices=["French (fine-tuned ★)", "Other languages"],
+                            value="French (fine-tuned ★)",
+                            label="From",
+                            show_label= False,
+                            interactive=True,
+                            elem_classes=["sb-no-box"]
+                        )
+                        gr.HTML('<div class="sb-lang-arrow">→</div>')
+                        output_lang = gr.Dropdown(
+                            choices=["English"],
+                            value="English",
+                            label="To",
+                            show_label= False,
+                            interactive=False,
+                            elem_classes=["sb-no-box"]
+                        )
+
+                    gr.HTML('<div class="sb-demo-divider"></div>')
+
+                    # Mode — flat, no box
+                    gr.HTML('<div class="sb-demo-section-label">Translation mode</div>')
+                    mode = gr.Radio(
+                        choices=["Translate without voice cloning", "Translate with voice cloning"],
+                        value="Translate without voice cloning",
+                        show_label= False,
+                        elem_classes=["sb-no-box"]
+                    )
+
+                    gr.HTML('<div class="sb-demo-divider"></div>')
+
+                    audio_input = gr.Audio(
+                        sources=["upload", "microphone"],
+                        type="filepath",
+                        label="Upload or record speech",
+                        elem_id="sb-audio-in",
+                    )
+
+                    gr.Markdown(
+                        "<div style='font-size:0.78rem;color:#475569;line-height:1.6;margin-top:4px;'>"
+                        "Upload any format or record directly. For voice cloning, the clip also serves as the speaker reference. "
+                        "<strong style='color:#f97316;'>French uses the LoRA fine-tuned model.</strong> "
+                        "Other languages use base Whisper with auto language detection."
+                        "</div>"
+                    )
+
+                    translate_btn = gr.Button("Run translation", variant="primary")
+
+                with gr.Column(scale=1):
+                    translated_text = gr.Textbox(
+                        label="English translation",
+                        lines=8,
+                        placeholder="Translated English text will appear here.",
+                        elem_id="sb-text-out",
+                    )
+                    output_audio = gr.Audio(type="filepath", label="Generated English speech", elem_id="sb-audio-out")
+                    with gr.Row():
+                        runtime_info = gr.Textbox(label="Runtime breakdown", lines=4, interactive=False, elem_id="sb-runtime-box")
+                        pipeline_status = gr.Textbox(label="Status", lines=4, interactive=False, elem_id="sb-status-box")
 
     # ── Feedback ──
     gr.HTML(f"""
