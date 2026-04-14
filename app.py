@@ -1982,8 +1982,8 @@ footer.svelte-1rjryqp { display: none !important; }
 # =========================================================
 # UI
 # =========================================================
-with gr.Blocks(css=CUSTOM_CSS, title="SpeechBridge") as demo:
-
+# with gr.Blocks(css=CUSTOM_CSS, title="SpeechBridge") as demo:
+with gr.Blocks(title="SpeechBridge") as demo:
     gr.HTML("""
     <nav id="sb-nav">
         <div class="sb-logo">
@@ -2244,13 +2244,15 @@ with gr.Blocks(css=CUSTOM_CSS, title="SpeechBridge") as demo:
                 label="Upload or record French speech",
             )
 
-            audio_state = gr.State()
+            # audio_state = gr.State()
+            #
+            # audio_input.change(
+            #     fn=persist_audio_file,
+            #     inputs=audio_input,
+            #     outputs=audio_state
+            # )
 
-            audio_input.change(
-                fn=persist_audio_file,
-                inputs=audio_input,
-                outputs=audio_state
-            )
+
 
             gr.Markdown("<div style='font-size:0.78rem;color:#475569;line-height:1.6;margin-top:4px;'>Upload any format or record directly. For voice cloning, the clip also serves as the speaker reference.</div>")
 
@@ -2424,7 +2426,7 @@ with gr.Blocks(css=CUSTOM_CSS, title="SpeechBridge") as demo:
     init_btn.click(fn=initialise_models, outputs=model_status)
     translate_btn.click(
         fn=run_app,
-        inputs=[mode, audio_state],
+        inputs=[mode, audio_input],
         outputs=[translated_text, output_audio, runtime_info, pipeline_status]
     )
 
@@ -2432,4 +2434,4 @@ with gr.Blocks(css=CUSTOM_CSS, title="SpeechBridge") as demo:
 if __name__ == "__main__":
     init_thread = threading.Thread(target=background_init, daemon=True)
     init_thread.start()
-    demo.launch()
+    demo.launch(css=CUSTOM_CSS)
