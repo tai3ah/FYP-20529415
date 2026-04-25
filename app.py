@@ -1072,6 +1072,18 @@ h1, h2, h3, .sb-logo, .sb-section-title, .sb-hero-title, .sb-step-title, .sb-foo
     }
 }
 
+#sb-demo-video-box {
+    padding-top: 0 !important;
+}
+
+#sb-video {
+    border-radius: 24px !important;
+    overflow: hidden !important;
+    border: 1px solid var(--line) !important;
+    box-shadow: var(--shadow) !important;
+    background: rgba(255,255,255,0.50) !important;
+}
+
 .gradio-container .block { border-radius: 12px !important; }
 """
 
@@ -1112,7 +1124,7 @@ with gr.Blocks(title="SpeechBridge", css=CUSTOM_CSS) as demo:
             </h1>
             <p class="sb-hero-desc">
                 SpeechBridge translates speech into English while preserving the natural feel of the original speaker.
-                Choose standard speech output or optional voice cloning in a polished, examiner-friendly interface.
+                Choose standard speech output or optional voice cloning.
             </p>
             <div class="sb-hero-actions">
                 <a class="sb-btn-primary" href="#sb-system">Try it yourself</a>
@@ -1187,19 +1199,16 @@ with gr.Blocks(title="SpeechBridge", css=CUSTOM_CSS) as demo:
     <section id="sb-demo-video" class="sb-section sb-section-dark">
         <div class="sb-section-label">See it in action</div>
         <h2 class="sb-section-title sb-reveal">Watch a full translation run</h2>
-        <div class="sb-video-container sb-reveal sb-d1">
-            <video id="sb-video" controls style="display:none;">
-                <source src="demo.mp4" type="video/mp4">
-            </video>
-            <div class="sb-video-placeholder">
-                <div class="sb-play-btn">
-                    <svg width="22" height="22" viewBox="0 0 24 24" fill="#f7f3ee"><path d="M8 5v14l11-7L8 5z"/></svg>
-                </div>
-                <p>Demo video coming soon</p>
-            </div>
-        </div>
     </section>
     """)
+
+    with gr.Column(elem_id="sb-demo-video-box", elem_classes=["sb-section", "sb-section-dark"]):
+        gr.Video(
+            value="demo.mp4",
+            label=None,
+            interactive=False,
+            elem_id="sb-video"
+        )
 
     gr.HTML("""
     <section id="sb-samples" class="sb-section sb-section-alt">
