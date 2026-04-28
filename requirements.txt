@@ -10,3 +10,8 @@ pathvalidate
 numpy~=2.2.6
 torchaudio~=2.11.0
 speechbrain~=0.5.16
+noisereduce
+TTS
+resemblyzer
+huggingface_hub
+aiofiles
