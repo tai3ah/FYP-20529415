@@ -1,0 +1,4 @@
+Upload French speech audio (.wav/.mp3),English translation and timings,"English speech output (Piper, no voice cloning)",timestamp
+.gradio\flagged\Upload French speech audio .wav.mp3\1f11907dc6f7fcf98c42\inputsample1.mp3,"Hello, my name is Taiba. I am a student. I am 22 years old. I am Sri Lankan, but I live in Malaysia. I like to travel. I have three cats. I study computer science. I have a brother and a sister. It is beautiful today. We are on February 27.
+
+Timings (CPU): load 12.14s, ST 41.80s, TTS 6.94s, total 60.88s",".gradio\flagged\English speech output Piper, no voice cloning\a55cdf666e3cc2b1e44b\tts_d68e022deff84ff08b4ad534016e0eed.wav",2026-02-28 12:37:23.008202

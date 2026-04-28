@@ -17,6 +17,7 @@ from transformers import WhisperProcessor, WhisperForConditionalGeneration
 from peft import PeftModel
 from TTS.api import TTS
 from resemblyzer import VoiceEncoder, preprocess_wav
+
 from huggingface_hub import snapshot_download
 
 # =========================================================
@@ -93,9 +94,9 @@ def prepare_xtts_reference(audio_path: str) -> str:
     if len(audio) > max_samples:
         audio = audio[:max_samples]
     if len(audio) > XTTS_SR:
-        noise_clip = audio[: int(0.5 * XTTS_SR)]
+        noise_clip = audio[:int(0.5 * XTTS_SR)]
     else:
-        noise_clip = audio[: max(1, len(audio) // 4)]
+        noise_clip = audio[:max(1, len(audio) // 4)]
     try:
         audio = nr.reduce_noise(y=audio, sr=XTTS_SR, y_noise=noise_clip, prop_decrease=0.75, stationary=False)
     except Exception:
@@ -125,7 +126,7 @@ def split_text_for_xtts(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list:
     text = str(text).strip()
     if len(text) <= max_chars:
         return [text]
-    sentences = re.split(r"(?<=[.!?])\s+", text)
+    sentences = re.split(r'(?<=[.!?])\s+', text)
     sentences = [s.strip() for s in sentences if s.strip()]
     chunks, current = [], ""
     for sentence in sentences:
@@ -176,7 +177,7 @@ def load_translation_pipeline() -> str:
         snapshot_download(
             repo_id="tai3ah/whisper-medium-french-lora",
             local_dir=str(LORA_DIR),
-            local_dir_use_symlinks=False,
+            local_dir_use_symlinks=False
         )
 
     t0 = time.time()
@@ -184,7 +185,7 @@ def load_translation_pipeline() -> str:
     base_model = WhisperForConditionalGeneration.from_pretrained(
         BASE_MODEL_ID,
         torch_dtype=torch.float32,
-        low_cpu_mem_usage=True,
+        low_cpu_mem_usage=True
     ).to(DEVICE)
     base_model.eval()
     ST_MODEL = PeftModel.from_pretrained(base_model, str(LORA_DIR)).to(DEVICE)
@@ -230,18 +231,16 @@ def background_init():
 
 def _render_model_status() -> str:
     if TRANSLATION_READY and XTTS_READY:
-        return """
-        <div class="sb-model-status sb-model-ready">
-            <span class="sb-model-dot"></span>
-            Models ready
-        </div>
-        """
-    return """
-    <div class="sb-model-status sb-model-loading">
-        <span class="sb-spin">◌</span>
-        Initialising models in background
-    </div>
-    """
+        return """<div class="sb-model-status sb-model-ready">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="flex-shrink:0;">
+                <circle cx="7" cy="7" r="6" stroke="#2f6f73" stroke-width="1.5"/>
+                <path d="M4.5 7l2 2 3-3" stroke="#2f6f73" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            All models ready
+        </div>"""
+    return """<div class="sb-model-status sb-model-loading">
+        <span class="sb-spin">◌</span> Initialising models in background…
+    </div>"""
 
 
 def poll_model_status():
@@ -275,7 +274,7 @@ def translate_to_en(audio_16k: np.ndarray, sr: int, source_lang: str = "french")
             input_features=input_features,
             forced_decoder_ids=forced_decoder_ids,
             num_beams=1,
-            max_new_tokens=192,
+            max_new_tokens=192
         )
     else:
         ST_MODEL.disable_adapter_layers()
@@ -288,7 +287,7 @@ def translate_to_en(audio_16k: np.ndarray, sr: int, source_lang: str = "french")
                 input_features=input_features,
                 forced_decoder_ids=forced_decoder_ids,
                 num_beams=1,
-                max_new_tokens=192,
+                max_new_tokens=192
             )
         finally:
             ST_MODEL.enable_adapter_layers()
@@ -297,27 +296,17 @@ def translate_to_en(audio_16k: np.ndarray, sr: int, source_lang: str = "french")
 
 
 def piper_tts(text: str, out_wav: Path) -> None:
-    subprocess.run(
-        ["piper", "--model", str(PIPER_MODEL), "--config", str(PIPER_CFG), "--output_file", str(out_wav)],
-        input=text.encode("utf-8"),
-        check=True,
-    )
+    subprocess.run(["piper", "--model", str(PIPER_MODEL), "--config", str(PIPER_CFG), "--output_file", str(out_wav)],
+                   input=text.encode("utf-8"), check=True)
 
 
 def xtts_synthesise(text: str, ref_wav_path: str, out_wav: Path) -> int:
     chunks = split_text_for_xtts(text)
     audio_parts = []
     for chunk in chunks:
-        wav = XTTS_MODEL.tts(
-            text=chunk,
-            speaker_wav=ref_wav_path,
-            language="en",
-            temperature=XTTS_TEMPERATURE,
-            repetition_penalty=XTTS_REPETITION_PENALTY,
-            top_k=XTTS_TOP_K,
-            top_p=XTTS_TOP_P,
-            speed=XTTS_SPEED,
-        )
+        wav = XTTS_MODEL.tts(text=chunk, speaker_wav=ref_wav_path, language="en",
+                              temperature=XTTS_TEMPERATURE, repetition_penalty=XTTS_REPETITION_PENALTY,
+                              top_k=XTTS_TOP_K, top_p=XTTS_TOP_P, speed=XTTS_SPEED)
         audio_parts.append(np.asarray(wav, dtype=np.float32))
     if not audio_parts:
         raise ValueError("XTTS produced no audio output.")
@@ -352,12 +341,8 @@ def run_standard_pipeline(audio_path: str, source_lang: str = "french", progress
     piper_tts(en_text_clean, out_wav)
     t_tts = time.time()
     progress(1.0, desc="Done")
-    timing = (
-        f"Audio preparation: {t_load - t0:.2f}s\n"
-        f"Speech translation: {t_trans - t_load:.2f}s\n"
-        f"Speech synthesis: {t_tts - t_trans:.2f}s\n"
-        f"Total: {t_tts - t0:.2f}s"
-    )
+    timing = (f"Audio preparation: {t_load - t0:.2f}s\nSpeech translation: {t_trans - t_load:.2f}s\n"
+              f"Speech synthesis: {t_tts - t_trans:.2f}s\nTotal: {t_tts - t0:.2f}s")
     lang_label = "French (fine-tuned)" if source_lang == "french" else "Auto-detected"
     return (en_text, str(out_wav), timing, f"Completed. {lang_label} → English translation done.")
 
@@ -389,13 +374,9 @@ def run_voice_clone_pipeline(audio_path: str, source_lang: str = "french", progr
     num_chunks = xtts_synthesise(en_text_clean, ref_wav_path, out_wav)
     t_tts = time.time()
     progress(1.0, desc="Done")
-    timing = (
-        f"Audio preparation: {t_load - t0:.2f}s\n"
-        f"Speech translation: {t_trans - t_load:.2f}s\n"
-        f"Reference audio prep: {t_ref - t_trans:.2f}s\n"
-        f"Voice cloning ({num_chunks} chunk(s)): {t_tts - t_ref:.2f}s\n"
-        f"Total: {t_tts - t0:.2f}s"
-    )
+    timing = (f"Audio preparation: {t_load - t0:.2f}s\nSpeech translation: {t_trans - t_load:.2f}s\n"
+              f"Reference audio prep: {t_ref - t_trans:.2f}s\nVoice cloning ({num_chunks} chunk(s)): {t_tts - t_ref:.2f}s\n"
+              f"Total: {t_tts - t0:.2f}s")
     lang_label = "French (fine-tuned)" if source_lang == "french" else "Auto-detected"
     return (en_text, str(out_wav), timing, f"Completed. {lang_label} → English, voice cloned.")
 
@@ -409,6 +390,9 @@ def run_app(mode: str, audio_path: str, input_lang_label: str = "French (★)", 
     return ("Invalid mode.", None, "", "Please select a valid mode.")
 
 
+# =========================================================
+# CSS
+# =========================================================
 # =========================================================
 # CSS
 # =========================================================
@@ -744,17 +728,17 @@ h1, h2, h3, .sb-logo, .sb-section-title, .sb-hero-title, .sb-step-title, .sb-foo
     display: inline-flex;
     align-items: center;
     gap: 10px;
-    
+
     margin-bottom: 22px;
     padding: 10px 16px;
     border-radius: 999px;
     border: 1px solid var(--line);
-    
+
     background: rgba(255,255,255,0.58);
     color: var(--brand);
     font-size: 0.82rem;
     font-weight: 600;
-    
+
     box-shadow: 0 8px 20px rgba(39,72,74,0.05);
 }
 .sb-model-dot {
@@ -917,6 +901,41 @@ h1, h2, h3, .sb-logo, .sb-section-title, .sb-hero-title, .sb-step-title, .sb-foo
     border: 1px solid var(--line) !important;
 }
 
+/* HF/Gradio scrolling and layout stability fix */
+html, body {
+    overflow-x: hidden !important;
+}
+
+.gradio-container,
+.gradio-container > div {
+    width: 100% !important;
+    max-width: 100% !important;
+    overflow-x: hidden !important;
+}
+
+#sb-demo-inner,
+#sb-demo-inner * {
+    max-width: 100% !important;
+}
+
+.sb-demo-grid {
+    width: 100% !important;
+    max-width: 100% !important;
+    overflow: visible !important;
+}
+
+.sb-demo-grid > div {
+    min-width: 0 !important;
+}
+
+#sb-system {
+    overflow-x: hidden !important;
+}
+
+#sb-hero {
+    min-height: 600px !important;
+}
+
 
 
 #sb-audio-in,
@@ -1072,27 +1091,13 @@ h1, h2, h3, .sb-logo, .sb-section-title, .sb-hero-title, .sb-step-title, .sb-foo
     }
 }
 
-#sb-demo-video-box {
-    padding-top: 0 !important;
-}
-
-#sb-video {
-    border-radius: 24px !important;
-    overflow: hidden !important;
-    border: 1px solid var(--line) !important;
-    box-shadow: var(--shadow) !important;
-    background: rgba(255,255,255,0.50) !important;
-}
-
 .gradio-container .block { border-radius: 12px !important; }
 """
-
 
 # =========================================================
 # UI
 # =========================================================
 with gr.Blocks(title="SpeechBridge", css=CUSTOM_CSS) as demo:
-
     gr.HTML("""
     <nav id="sb-nav">
         <div class="sb-logo">
@@ -1213,7 +1218,6 @@ with gr.Blocks(title="SpeechBridge", css=CUSTOM_CSS) as demo:
         </div>
         """)
 
-
     gr.HTML("""
     <section id="sb-samples" class="sb-section sb-section-alt">
         <div class="sb-section-label">Sample audio</div>
@@ -1262,80 +1266,80 @@ with gr.Blocks(title="SpeechBridge", css=CUSTOM_CSS) as demo:
         )
 
         with gr.Column(elem_id="sb-demo-inner"):
-            gr.HTML('<div class="sb-demo-shell">')
-            model_status_display = gr.HTML(value=_render_model_status())
-            init_btn = gr.Button(
-                "Initialise models",
-                variant="secondary",
-                visible=not (TRANSLATION_READY and XTTS_READY),
-            )
-            status_timer = gr.Timer(value=8, active=True)
+            with gr.Group(elem_classes=["sb-demo-shell"]):
+                model_status_display = gr.HTML(value=_render_model_status())
+                init_btn = gr.Button(
+                    "Initialise models",
+                    variant="secondary",
+                    visible=not (TRANSLATION_READY and XTTS_READY),
+                )
+                status_timer = gr.Timer(value=8, active=True)
 
-            with gr.Row(elem_classes=["sb-demo-grid"]):
-                with gr.Column(elem_classes=["sb-panel"]):
-                    gr.HTML('<h3 class="sb-panel-title">Controls</h3>')
-                    gr.HTML(
-                        '<p class="sb-panel-subtitle">Choose the source language path, select the output mode, then upload or record your speech sample.</p>'
-                    )
+                with gr.Row(elem_classes=["sb-demo-grid"]):
+                    with gr.Column(elem_classes=["sb-panel"]):
+                        gr.HTML('<h3 class="sb-panel-title">Controls</h3>')
+                        gr.HTML(
+                            '<p class="sb-panel-subtitle">Choose the source language path, select the output mode, then upload or record your speech sample.</p>'
+                        )
 
-                    input_lang = gr.Dropdown(
-                        choices=["French (★)", "Other languages"],
-                        value="French (★)",
-                        label="Input language",
-                        interactive=True,
-                        elem_id="input-lang"
-                    )
-                    output_lang = gr.Dropdown(
-                        choices=["English"],
-                        value="English",
-                        label="Output language",
-                        interactive=True,
-                        elem_id="output-lang"
-                    )
-                    mode = gr.Radio(
-                        choices=["Translate without voice cloning", "Translate with voice cloning"],
-                        value="Translate without voice cloning",
-                        label="Translation mode",
-                    )
-                    audio_input = gr.Audio(
-                        sources=["upload", "microphone"],
-                        type="filepath",
-                        label="Upload or record audio",
-                        elem_id="sb-audio-in",
-                    )
-                    gr.HTML(
-                        "<div class='sb-helper'>"
-                        "Use <strong>voice cloning</strong> when you want the English output to mimic the original speaker. "
-                        "The same clip is used as the XTTS reference audio."
-                        "</div>"
-                    )
-                    run_btn = gr.Button("Generate output", variant="primary")
-                    status_text = gr.Textbox(label="Status", interactive=False, elem_id="sb-status-box")
+                        input_lang = gr.Dropdown(
+                            choices=["French (★)", "Other languages"],
+                            value="French (★)",
+                            label="Input language",
+                            interactive=True,
+                            elem_id="input-lang"
+                        )
+                        output_lang = gr.Dropdown(
+                            choices=["English"],
+                            value="English",
+                            label="Output language",
+                            interactive=True,
+                            elem_id="output-lang"
+                        )
+                        mode = gr.Radio(
+                            choices=["Translate without voice cloning", "Translate with voice cloning"],
+                            value="Translate without voice cloning",
+                            label="Translation mode",
+                        )
+                        audio_input = gr.Audio(
+                            sources=["upload", "microphone"],
+                            type="filepath",
+                            label="Upload or record audio",
+                            elem_id="sb-audio-in",
+                        )
+                        gr.HTML(
+                            "<div class='sb-helper'>"
+                            "Use <strong>voice cloning</strong> when you want the English output to mimic the original speaker. "
+                            "The same clip is used as the XTTS reference audio."
+                            "</div>"
+                        )
+                        run_btn = gr.Button("Generate output", variant="primary")
+                        status_text = gr.Textbox(label="Status", interactive=False, elem_id="sb-status-box")
 
-                with gr.Column(elem_classes=["sb-panel"]):
-                    gr.HTML('<h3 class="sb-panel-title">Results</h3>')
-                    gr.HTML(
-                        '<p class="sb-panel-subtitle">The translated text, generated English audio, and runtime breakdown will appear here.</p>'
-                    )
-                    translated_text = gr.Textbox(
-                        label="Translated English text",
-                        interactive=False,
-                        elem_id="sb-text-out",
-                        placeholder="Your translated English text will appear here.",
-                    )
-                    audio_output = gr.Audio(
-                        label="Generated English speech",
-                        type="filepath",
-                        interactive=False,
-                        elem_id="sb-audio-out",
-                    )
-                    runtime_box = gr.Textbox(
-                        label="Runtime details",
-                        interactive=False,
-                        elem_id="sb-runtime-box",
-                        placeholder="Processing time and stage timings will appear here.",
-                    )
-            gr.HTML('</div>')
+                    with gr.Column(elem_classes=["sb-panel"]):
+                        gr.HTML('<h3 class="sb-panel-title">Results</h3>')
+                        gr.HTML(
+                            '<p class="sb-panel-subtitle">The translated text, generated English audio, and runtime breakdown will appear here.</p>'
+                        )
+                        translated_text = gr.Textbox(
+                            label="Translated English text",
+                            interactive=False,
+                            elem_id="sb-text-out",
+                            placeholder="Your translated English text will appear here.",
+                        )
+                        audio_output = gr.Audio(
+                            label="Generated English speech",
+                            type="filepath",
+                            interactive=False,
+                            elem_id="sb-audio-out",
+                        )
+                        runtime_box = gr.Textbox(
+                            label="Runtime details",
+                            interactive=False,
+                            elem_id="sb-runtime-box",
+                            placeholder="Processing time and stage timings will appear here.",
+                        )
+
 
     gr.HTML(f"""
     <section id="sb-feedback">
@@ -1478,10 +1482,13 @@ with gr.Blocks(title="SpeechBridge", css=CUSTOM_CSS) as demo:
     </footer>
     """)
 
+    # ── JS: nav smooth scroll + scroll reveal + arrow draw-in + feedback ──
     demo.load(
         fn=None,
         js=f"""
         function() {{
+
+            /* ── Nav smooth scroll (fixes HF iframe anchor issue) ── */
             function initNavScroll() {{
                 document.querySelectorAll('a[href^="#"]').forEach(function(a) {{
                     a.addEventListener('click', function(e) {{
@@ -1495,6 +1502,7 @@ with gr.Blocks(title="SpeechBridge", css=CUSTOM_CSS) as demo:
             }}
             setTimeout(initNavScroll, 600);
 
+            /* ── Scroll reveal ── */
             function initReveal() {{
                 var els = document.querySelectorAll('.sb-reveal');
                 if (!els.length) {{ setTimeout(initReveal, 400); return; }}
@@ -1509,52 +1517,140 @@ with gr.Blocks(title="SpeechBridge", css=CUSTOM_CSS) as demo:
             }}
             setTimeout(initReveal, 500);
 
+            /* ── Arrow draw-in ── */
             function initArrows() {{
                 var how = document.getElementById('sb-how');
                 if (!how) {{ setTimeout(initArrows, 400); return; }}
-                var arrows = how.querySelectorAll('.sb-arrow-svg');
-                var done = false;
-                var obs = new IntersectionObserver(function(entries) {{
-                    entries.forEach(function(entry) {{
-                        if (done || !entry.isIntersecting) return;
-                        done = true;
-                        arrows.forEach(function(a) {{ a.classList.add('drawn'); }});
-                        obs.disconnect();
-                    }});
-                }}, {{ threshold: 0.2 }});
-                obs.observe(how);
+                var arrowObs = new IntersectionObserver(function(entries) {{
+                    if (!entries[0].isIntersecting) return;
+                    setTimeout(function() {{
+                        document.querySelectorAll('.sb-arrow-svg').forEach(function(svg) {{
+                            svg.classList.add('drawn');
+                        }});
+                    }}, 350);
+                    arrowObs.disconnect();
+                }}, {{ threshold: 0.25 }});
+                arrowObs.observe(how);
             }}
-            setTimeout(initArrows, 700);
+            setTimeout(initArrows, 500);
+
+            /* ── Feedback carousel ── */
+            var SHEET_URL = 'https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:json';
+            var PER_PAGE = 3;
+            var allFeedback = [];
+            var currentPage = 0;
+            var autoTimer = null;
+
+            function renderStars(n) {{
+                var s = '';
+                var filled = Math.round(n || 0);
+                for (var i = 1; i <= 5; i++) {{
+                    s += '<span style="color:#2f6f73;font-size:13px;">' + (i <= filled ? '★' : '☆') + '</span>';
+                }}
+                return s;
+            }}
+            function renderPage(page) {{
+                var carousel = document.getElementById('sb-feedback-carousel');
+                var controls = document.getElementById('sb-carousel-controls');
+                if (!carousel) return;
+                var slice = allFeedback.slice(page * PER_PAGE, page * PER_PAGE + PER_PAGE);
+                carousel.innerHTML = '';
+                slice.forEach(function(fb) {{
+                    var avg = ((fb.r1 || 0) + (fb.r3 || 0)) / 2;
+                    var card = document.createElement('div');
+                    card.className = 'sb-feedback-card';
+                    card.innerHTML =
+                        '<div style="display:flex;gap:3px;margin-bottom:4px;">' + renderStars(avg) + '</div>' +
+                        '<div class="sb-feedback-quote">' + (fb.comment || 'No comment provided.') + '</div>' +
+                        '<div class="sb-feedback-name">' + (fb.name || 'Anonymous') + '</div>';
+                    carousel.appendChild(card);
+                }});
+                if (controls) {{
+                    controls.querySelectorAll('.sb-carousel-dot').forEach(function(d, i) {{
+                        d.classList.toggle('active', i === page);
+                    }});
+                }}
+                currentPage = page;
+            }}
+            function buildControls(total) {{
+                var controls = document.getElementById('sb-carousel-controls');
+                if (!controls || total <= 1) return;
+                controls.innerHTML = '';
+                controls.style.display = 'flex';
+                for (var i = 0; i < total; i++) {{
+                    (function(idx) {{
+                        var dot = document.createElement('button');
+                        dot.className = 'sb-carousel-dot' + (idx === 0 ? ' active' : '');
+                        dot.addEventListener('click', function() {{ clearInterval(autoTimer); renderPage(idx); }});
+                        controls.appendChild(dot);
+                    }})(i);
+                }}
+            }}
+            function loadFeedback() {{
+                fetch(SHEET_URL)
+                    .then(function(r) {{ return r.text(); }})
+                    .then(function(text) {{
+                        var json = JSON.parse(text.substring(text.indexOf('(') + 1, text.lastIndexOf(')')));
+                        var rows = json.table && json.table.rows ? json.table.rows : [];
+                        allFeedback = rows.map(function(row) {{
+                            var c = row.c || [];
+                            var nameVal = c[5] && c[5].v ? String(c[5].v).trim() : 'Anonymous';
+                            return {{
+                                r1: c[1] && c[1].v ? Number(c[1].v) : 0,
+                                r2: c[2] && c[2].v ? Number(c[2].v) : 0,
+                                r3: c[3] && c[3].v ? Number(c[3].v) : 0,
+                                comment: c[4] && c[4].v ? String(c[4].v) : '',
+                                name: nameVal.toLowerCase() === 'anonymous' ? 'Anonymous' : nameVal
+                            }};
+                        }}).filter(function(fb) {{ return fb.comment || fb.r1; }});
+                        if (!allFeedback.length) return;
+                        var total = Math.ceil(allFeedback.length / PER_PAGE);
+                        buildControls(total);
+                        renderPage(0);
+                        if (total > 1) {{
+                            autoTimer = setInterval(function() {{
+                                renderPage((currentPage + 1) % total);
+                            }}, 5000);
+                        }}
+                    }})
+                    .catch(function(e) {{ console.log('Feedback error:', e); }});
+            }}
+            setTimeout(loadFeedback, 1500);
         }}
         """
     )
 
+    # ── Event handlers ──
+    status_timer.tick(fn=poll_model_status, outputs=[model_status_display, init_btn, status_timer])
+    init_btn.click(fn=do_init_models, outputs=[model_status_display, init_btn])
     run_btn.click(
         fn=run_app,
         inputs=[mode, audio_input, input_lang],
-        outputs=[translated_text, audio_output, runtime_box, status_text],
+        outputs=[translated_text, audio_output, runtime_box, status_text]
     )
 
-    status_timer.tick(
-        fn=poll_model_status,
-        outputs=[model_status_display, init_btn, status_timer],
-    )
-    init_btn.click(
-        fn=do_init_models,
-        outputs=[model_status_display, init_btn],
-    )
 
 if __name__ == "__main__":
     from fastapi.staticfiles import StaticFiles
-    threading.Thread(target=background_init, daemon=True).start()
-    demo.launch(prevent_thread_lock=True)
+
+    def delayed_init():
+        time.sleep(10)
+        background_init()
+
+    init_thread = threading.Thread(target=delayed_init, daemon=True)
+    init_thread.start()
+
+    demo.launch(server_name="0.0.0.0", server_port=7860, prevent_thread_lock=True)
+
     try:
         demo.server_app.mount("/audio", StaticFiles(directory="audio_samples"), name="audio")
     except Exception as e:
         print(f"Audio mount failed: {e}")
+
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
         demo.close()
+        print("\nStopped.")
         print("\nStopped.")

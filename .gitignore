@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+.venv_xtts
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs and temp
+*.log
+tmp/
+temp/
+*.tmp
+
+# Audio outputs / generated files
+outputs/
+audio_outputs/
+xtts_eval_outputs*/
+*.wav
+*.mp3
+
+# Model files / weights
+*.onnx
+*.bin
+*.pt
+*.pth
+*.ckpt
+
+models/
+checkpoints/
+cache/
+hf_cache/
+.huggingface/
+transformers_cache/
+
+# Data
+data/
+datasets/
+*.csv
+*.tsv
+*.jsonl
+*.parquet
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Gradio / app temp
+.gradio/
+
+# Node
+node_modules/
