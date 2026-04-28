@@ -11,6 +11,9 @@
 
 https://huggingface.co/spaces/tai3ah/speechbridge
 
+
+**Important:** After opening the page, please select the **App** tab to access the live system interface.
+
 This repository is provided for archival, code review, and reproducibility purposes only. It is not intended to be the marking environment. All functional testing should be carried out using the hosted deployment above. No local setup is required.
 
 ---
