@@ -4,7 +4,9 @@
 **Taibah Rushdi Khalid (20529415)**
 
 ---
+The submitted code in this repository is for **archival and review purposes only**. All functionality is fully deployed and accessible at the link below, no local setup is required to test the system.
 
+---
 ## Live Demonstration / Testing
 
 ### **The system must be tested via the hosted Hugging Face Space:**
@@ -14,7 +16,6 @@ https://huggingface.co/spaces/tai3ah/speechbridge
 
 **Important:** After opening the page, please select the **App** tab to access the live system interface.
 
-This repository is provided for archival, code review, and reproducibility purposes only. It is not intended to be the marking environment. All functional testing should be carried out using the hosted deployment above. No local setup is required.
 
 ---
 
