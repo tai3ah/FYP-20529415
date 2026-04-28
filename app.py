@@ -1223,27 +1223,27 @@ with gr.Blocks(title="SpeechBridge", css=CUSTOM_CSS) as demo:
             <div class="sb-sample-card sb-reveal">
                 <div class="sb-sample-label">Sample 1</div>
                 <div class="sb-sample-name">(Male)</div>
-                <a class="sb-sample-dl" href="/file=audio_samples/audio6.m4a" download>Download clip →</a>
+                <a class="sb-sample-dl" href="/audio/audio6.m4a" download>Download clip →</a>
             </div>
             <div class="sb-sample-card sb-reveal sb-d1">
                 <div class="sb-sample-label">Sample 2</div>
                 <div class="sb-sample-name">(Young female)</div>
-                <a class="sb-sample-dl" href="/file=audio_samples/audio2.m4a" download>Download clip →</a>
+                <a class="sb-sample-dl" href="/audio/audio2.m4a" download>Download clip →</a>
             </div>
             <div class="sb-sample-card sb-reveal sb-d2">
                 <div class="sb-sample-label">Sample 3</div>
                 <div class="sb-sample-name">(Young female)</div>
-                <a class="sb-sample-dl" href="/file=audio_samples/audio3.m4a" download>Download clip →</a>
+                <a class="sb-sample-dl" href="/audio/audio3.m4a" download>Download clip →</a>
             </div>
             <div class="sb-sample-card sb-reveal sb-d3">
                 <div class="sb-sample-label">Sample 4</div>
                 <div class="sb-sample-name">(Young female)</div>
-                <a class="sb-sample-dl" href="/file=audio_samples/audio7.m4a" download>Download clip →</a>
+                <a class="sb-sample-dl" href="/audio/audio7.m4a" download>Download clip →</a>
             </div>
             <div class="sb-sample-card sb-reveal sb-d4">
                 <div class="sb-sample-label">Sample 5</div>
                 <div class="sb-sample-name">(Adult female)</div>
-                <a class="sb-sample-dl" href="/file=audio_samples/audio9.m4a" download>Download clip →</a>
+                <a class="sb-sample-dl" href="/audio/audio9.m4a" download>Download clip →</a>
             </div>
         </div>
     </section>
@@ -1343,7 +1343,6 @@ with gr.Blocks(title="SpeechBridge", css=CUSTOM_CSS) as demo:
             <div>
                 <div class="sb-section-label">Feedback</div>
                 <h2 class="sb-section-title">What users thought</h2>
-                <p class="sb-section-sub" style="margin-bottom:0;">Examiner and tester feedback can be shown here. The section stays visible even when there are no loaded entries.</p>
             </div>
             <a class="sb-feedback-form-btn" href="{GOOGLE_FORM_URL}" target="_blank">Share your thoughts!</a>
         </div>
@@ -1546,5 +1545,16 @@ with gr.Blocks(title="SpeechBridge", css=CUSTOM_CSS) as demo:
     )
 
 if __name__ == "__main__":
+    from fastapi.staticfiles import StaticFiles
     threading.Thread(target=background_init, daemon=True).start()
-    demo.launch()
+    demo.launch(prevent_thread_lock=True)
+    try:
+        demo.server_app.mount("/audio", StaticFiles(directory="audio_samples"), name="audio")
+    except Exception as e:
+        print(f"Audio mount failed: {e}")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        demo.close()
+        print("\nStopped.")
