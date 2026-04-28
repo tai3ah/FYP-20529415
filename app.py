@@ -1203,12 +1203,16 @@ with gr.Blocks(title="SpeechBridge", css=CUSTOM_CSS) as demo:
     """)
 
     with gr.Column(elem_id="sb-demo-video-box", elem_classes=["sb-section", "sb-section-dark"]):
-        gr.Video(
-            value="demo.mp4",
-            label=None,
-            interactive=False,
-            elem_id="sb-video"
-        )
+        gr.HTML("""
+        <div style="position:relative;padding-bottom:56.25%;border-radius:12px;overflow:hidden;">
+            <iframe
+                style="position:absolute;top:0;left:0;width:100%;height:100%;border:0;border-radius:12px;"
+                src="https://www.youtube.com/embed/Q9OkTI7ZvgE"
+                allowfullscreen>
+            </iframe>
+        </div>
+        """)
+
 
     gr.HTML("""
     <section id="sb-samples" class="sb-section sb-section-alt">
@@ -1217,29 +1221,29 @@ with gr.Blocks(title="SpeechBridge", css=CUSTOM_CSS) as demo:
         <p class="sb-section-sub sb-reveal sb-d1">Download any French speech sample below and upload it into the system to see it in action.</p>
         <div class="sb-samples-grid">
             <div class="sb-sample-card sb-reveal">
-                <div class="sb-sample-label">Sample 01</div>
-                <div class="sb-sample-name">Child's voice</div>
-                <a class="sb-sample-dl" href="audio_samples/sample_1.wav" download>Download clip →</a>
+                <div class="sb-sample-label">Sample 1</div>
+                <div class="sb-sample-name">(Male)</div>
+                <a class="sb-sample-dl" href="/file=audio_samples/audio6.m4a" download>Download clip →</a>
             </div>
             <div class="sb-sample-card sb-reveal sb-d1">
-                <div class="sb-sample-label">Sample 02</div>
-                <div class="sb-sample-name">Adult female voice</div>
-                <a class="sb-sample-dl" href="audio_samples/sample_2.wav" download>Download clip →</a>
+                <div class="sb-sample-label">Sample 2</div>
+                <div class="sb-sample-name">(Young female)</div>
+                <a class="sb-sample-dl" href="/file=audio_samples/audio2.m4a" download>Download clip →</a>
             </div>
             <div class="sb-sample-card sb-reveal sb-d2">
-                <div class="sb-sample-label">Sample 03</div>
-                <div class="sb-sample-name">Adult male voice</div>
-                <a class="sb-sample-dl" href="audio_samples/sample_3.wav" download>Download clip →</a>
+                <div class="sb-sample-label">Sample 3</div>
+                <div class="sb-sample-name">(Young female)</div>
+                <a class="sb-sample-dl" href="/file=audio_samples/audio3.m4a" download>Download clip →</a>
             </div>
             <div class="sb-sample-card sb-reveal sb-d3">
-                <div class="sb-sample-label">Sample 04</div>
-                <div class="sb-sample-name">Expressive speech</div>
-                <a class="sb-sample-dl" href="audio_samples/sample_4.wav" download>Download clip →</a>
+                <div class="sb-sample-label">Sample 4</div>
+                <div class="sb-sample-name">(Young female)</div>
+                <a class="sb-sample-dl" href="/file=audio_samples/audio7.m4a" download>Download clip →</a>
             </div>
             <div class="sb-sample-card sb-reveal sb-d4">
-                <div class="sb-sample-label">Sample 05</div>
-                <div class="sb-sample-name">Elderly voice</div>
-                <a class="sb-sample-dl" href="audio_samples/sample_5.wav" download>Download clip →</a>
+                <div class="sb-sample-label">Sample 5</div>
+                <div class="sb-sample-name">(Adult female)</div>
+                <a class="sb-sample-dl" href="/file=audio_samples/audio9.m4a" download>Download clip →</a>
             </div>
         </div>
     </section>
