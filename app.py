@@ -263,6 +263,26 @@ LANG_MAP = {
     "Other languages": "other",
 }
 
+_VOICE_ENCODER = None
+
+def _get_voice_encoder():
+    global _VOICE_ENCODER
+    if _VOICE_ENCODER is None:
+        _VOICE_ENCODER = VoiceEncoder()
+    return _VOICE_ENCODER
+
+def compute_speaker_similarity(input_path: str, output_path: str) -> str:
+    try:
+        enc = _get_voice_encoder()
+        wav_in  = preprocess_wav(input_path)
+        wav_out = preprocess_wav(output_path)
+        e_in  = enc.embed_utterance(wav_in)
+        e_out = enc.embed_utterance(wav_out)
+        score = float(np.dot(e_in, e_out) / (np.linalg.norm(e_in) * np.linalg.norm(e_out)))
+        return f"{score:.3f}"
+    except Exception:
+        return "unavailable"
+
 
 @torch.inference_mode()
 def translate_to_en(audio_16k: np.ndarray, sr: int, source_lang: str = "french") -> str:
@@ -351,12 +371,14 @@ def run_standard_pipeline(audio_path: str, source_lang: str = "french", progress
     out_wav = OUT_DIR / f"standard_{uuid.uuid4().hex}.wav"
     piper_tts(en_text_clean, out_wav)
     t_tts = time.time()
+    sim = compute_speaker_similarity(audio_path, str(out_wav))
     progress(1.0, desc="Done")
     timing = (
         f"Audio preparation: {t_load - t0:.2f}s\n"
         f"Speech translation: {t_trans - t_load:.2f}s\n"
         f"Speech synthesis: {t_tts - t_trans:.2f}s\n"
-        f"Total: {t_tts - t0:.2f}s"
+        f"Total: {t_tts - t0:.2f}s\n"
+        f"Speaker similarity: {sim}"
     )
     lang_label = "French (fine-tuned)" if source_lang == "french" else "Auto-detected"
     return (en_text, str(out_wav), timing, f"Completed. {lang_label} → English translation done.")
@@ -388,13 +410,15 @@ def run_voice_clone_pipeline(audio_path: str, source_lang: str = "french", progr
     out_wav = OUT_DIR / f"cloned_{uuid.uuid4().hex}.wav"
     num_chunks = xtts_synthesise(en_text_clean, ref_wav_path, out_wav)
     t_tts = time.time()
+    sim = compute_speaker_similarity(audio_path, str(out_wav))
     progress(1.0, desc="Done")
     timing = (
         f"Audio preparation: {t_load - t0:.2f}s\n"
         f"Speech translation: {t_trans - t_load:.2f}s\n"
         f"Reference audio prep: {t_ref - t_trans:.2f}s\n"
         f"Voice cloning ({num_chunks} chunk(s)): {t_tts - t_ref:.2f}s\n"
-        f"Total: {t_tts - t0:.2f}s"
+        f"Total: {t_tts - t0:.2f}s\n"
+        f"Speaker similarity: {sim}"
     )
     lang_label = "French (fine-tuned)" if source_lang == "french" else "Auto-detected"
     return (en_text, str(out_wav), timing, f"Completed. {lang_label} → English, voice cloned.")
